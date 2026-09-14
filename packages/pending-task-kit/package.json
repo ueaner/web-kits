@@ -30,8 +30,8 @@
     "test:watch": "vitest"
   },
   "peerDependencies": {
-    "react": ">=18",
-    "zustand": ">=4.4.0"
+    "react": ">=19",
+    "zustand": ">=5"
   },
   "peerDependenciesMeta": {
     "react": {
