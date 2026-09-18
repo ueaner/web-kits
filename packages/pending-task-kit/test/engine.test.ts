@@ -994,6 +994,453 @@ describe("PendingTaskPoller", () => {
 
     pollerB.stop()
   })
+
+  it("passes a live AbortSignal to handler.check(), and aborts it when stop() is called mid-check", async () => {
+    const store = createPendingTaskStore({ storageKey: "engine-abort-on-stop" })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+
+    let capturedSignal: AbortSignal | undefined
+    let resolveCheck!: (value: { status: "pending" }) => void
+    const check = vi.fn((_task: unknown, signal: AbortSignal) => {
+      capturedSignal = signal
+      return new Promise<{ status: "pending" }>((resolve) => {
+        resolveCheck = resolve
+      })
+    })
+    const registry: PendingTaskRegistry = { demo: { check } }
+    const poller = new PendingTaskPoller({ store, registry })
+
+    poller.forceCheckAll()
+    await flush()
+    expect(check).toHaveBeenCalledTimes(1)
+    expect(capturedSignal?.aborted).toBe(false)
+
+    poller.stop()
+    expect(capturedSignal?.aborted).toBe(true)
+
+    resolveCheck({ status: "pending" })
+    await flush()
+
+    // The stale "pending" response arriving after stop() must be discarded entirely — not
+    // applied to the task's metadata, and (see the election-off variant below for the failure
+    // path) not treated as any kind of outcome either.
+    expect(store.getState().tasks[0]?.metadata).toBeUndefined()
+    expect(store.getState().tasks[0]?.failureCount ?? 0).toBe(0)
+  })
+
+  it("discards (rather than counting as a failure) an AbortError from stop() even when crossTabPollLeaderElection is off", async () => {
+    // Regression test: reconfirmLeadership used to check `crossTabPollLeaderElection` before
+    // `this.stopped`, so with election off it always returned `fence` (never `false`) — a
+    // handler that wires the AbortSignal into its own request and gets an AbortError from
+    // stop() would fall through to the *normal* failure-counting path instead of being
+    // discarded, potentially bumping failureCount all the way to a bogus "error" finalize
+    // dispatched on an already-stopped poller.
+    const store = createPendingTaskStore({ storageKey: "engine-abort-discarded-election-off" })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+
+    const check = vi.fn((_task: unknown, signal: AbortSignal) => {
+      return new Promise<{ status: "pending" }>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("AbortError")))
+      })
+    })
+    const onCheckError = vi.fn()
+    const onResult = vi.fn()
+    const registry: PendingTaskRegistry = { demo: { check } }
+    const poller = new PendingTaskPoller({
+      store,
+      registry,
+      onCheckError,
+      onResult,
+      crossTabPollLeaderElection: false,
+      maxFailureCount: 1, // would finalize as "error" on the very first counted failure
+    })
+
+    poller.forceCheckAll()
+    await flush()
+    expect(check).toHaveBeenCalledTimes(1)
+
+    poller.stop() // aborts the in-flight check() regardless of crossTabPollLeaderElection
+    await flush()
+
+    expect(onCheckError).not.toHaveBeenCalled()
+    expect(onResult).not.toHaveBeenCalled()
+    expect(store.getState().tasks[0]?.failureCount ?? 0).toBe(0)
+    expect(store.getState().tasks).toHaveLength(1) // not finalized as "error"
+  })
+
+  it("does not abort anything when stop() is called with no check() in flight", async () => {
+    const store = createPendingTaskStore({ storageKey: "engine-no-abort-when-idle" })
+    const registry: PendingTaskRegistry = {}
+    const poller = new PendingTaskPoller({ store, registry })
+
+    poller.start()
+    await flush()
+    expect(() => poller.stop()).not.toThrow()
+  })
+
+  it("uses retryBackoffMs for the failure-retry cadence instead of pollIntervalMs once a task has failed", async () => {
+    const store = createPendingTaskStore({ storageKey: "engine-retry-backoff" })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+
+    const check = vi.fn().mockRejectedValue(new Error("boom"))
+    const retryBackoffMs = vi.fn().mockReturnValue(200)
+    const registry: PendingTaskRegistry = { demo: { check, pollIntervalMs: 20, retryBackoffMs } }
+    const poller = new PendingTaskPoller({ store, registry, maxFailureCount: 10, pollTickMs: 20 })
+
+    poller.forceCheckAll()
+    await flush()
+    expect(check).toHaveBeenCalledTimes(1) // failureCount is now 1 — retryBackoffMs not
+    // consulted yet for *this* check, only for deciding when the *next* one is due.
+    expect(retryBackoffMs).not.toHaveBeenCalled()
+
+    poller.start()
+    // Well past pollIntervalMs (20ms) but under the 200ms backoff — must not have retried yet.
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(check).toHaveBeenCalledTimes(1)
+    expect(retryBackoffMs).toHaveBeenCalledWith(1)
+
+    // Past the 200ms backoff now (generous margin against CI jitter).
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(check.mock.calls.length).toBeGreaterThanOrEqual(2)
+
+    poller.stop()
+  })
+
+  it("falls back to pollIntervalMs for retries when retryBackoffMs isn't set", async () => {
+    const store = createPendingTaskStore({ storageKey: "engine-retry-no-backoff" })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+
+    const check = vi.fn().mockRejectedValue(new Error("boom"))
+    const registry: PendingTaskRegistry = { demo: { check, pollIntervalMs: 20 } }
+    const poller = new PendingTaskPoller({ store, registry, maxFailureCount: 10, pollTickMs: 20 })
+
+    poller.forceCheckAll()
+    await flush()
+    expect(check).toHaveBeenCalledTimes(1)
+
+    poller.start()
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(check.mock.calls.length).toBeGreaterThanOrEqual(2)
+
+    poller.stop()
+  })
+
+  it("fires onLeaderChange only when this tab's leadership status actually flips", async () => {
+    const store = createPendingTaskStore({ storageKey: "engine-leader-change" })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+
+    const check = vi.fn().mockResolvedValue({ status: "pending" })
+    const onLeaderChange = vi.fn()
+    const registry: PendingTaskRegistry = { demo: { check } }
+    const poller = new PendingTaskPoller({
+      store,
+      registry,
+      onLeaderChange,
+      pollLeaseKey: "engine-leader-change-poll-leader",
+    })
+
+    poller.forceCheckAll()
+    await flush()
+    expect(onLeaderChange).toHaveBeenNthCalledWith(1, true)
+    expect(onLeaderChange).toHaveBeenCalledTimes(1)
+
+    // Still leader on a repeat tick — must not fire again.
+    poller.forceCheckAll()
+    await flush()
+    expect(onLeaderChange).toHaveBeenCalledTimes(1)
+
+    // stop() releases leadership — flips to false.
+    poller.stop()
+    expect(onLeaderChange).toHaveBeenNthCalledWith(2, false)
+    expect(onLeaderChange).toHaveBeenCalledTimes(2)
+  })
+
+  it("never fires onLeaderChange when crossTabPollLeaderElection is off", async () => {
+    // Regression test: the two `setLeaderStatus(true)` calls after a successful reconfirm
+    // (catch- and success-path) weren't gated on crossTabPollLeaderElection — only the initial
+    // pre-check claim's was — so with election off, reconfirmLeadership always returning a
+    // non-false `fence` would still flip `isLeaderTab` to true and fire the callback, directly
+    // contradicting its own doc comment ("only ever called when crossTabPollLeaderElection is
+    // on"). stop()'s own `setLeaderStatus(false)` is also gated on election being on, so once
+    // wrongly flipped to true it would never be corrected back either.
+    const store = createPendingTaskStore({ storageKey: "engine-no-leader-change-election-off" })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+
+    const check = vi.fn().mockResolvedValue({ status: "pending" })
+    const onLeaderChange = vi.fn()
+    const registry: PendingTaskRegistry = { demo: { check } }
+    const poller = new PendingTaskPoller({
+      store,
+      registry,
+      onLeaderChange,
+      crossTabPollLeaderElection: false,
+    })
+
+    poller.forceCheckAll()
+    await flush()
+    poller.forceCheckAll()
+    await flush()
+    poller.stop()
+
+    expect(onLeaderChange).not.toHaveBeenCalled()
+  })
+
+  it("fires onLeaderChange(false) when leadership is lost to another tab, not just via stop()", async () => {
+    const storageKey = "engine-leader-change-lost-to-other-tab"
+    const store = createPendingTaskStore({ storageKey })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+
+    let resolveCheck!: (value: { status: "pending" }) => void
+    const check = vi.fn(
+      () =>
+        new Promise<{ status: "pending" }>((resolve) => {
+          resolveCheck = resolve
+        }),
+    )
+    const onLeaderChange = vi.fn()
+    const registry: PendingTaskRegistry = { demo: { check } }
+    const pollLeaseKey = `${storageKey}-poll-leader`
+    const poller = new PendingTaskPoller({ store, registry, onLeaderChange, pollLeaseKey })
+
+    poller.forceCheckAll()
+    await flush()
+    expect(onLeaderChange).toHaveBeenNthCalledWith(1, true)
+
+    // Simulate another tab taking over the lease while this request is still in flight.
+    localStorage.setItem(
+      pollLeaseKey,
+      JSON.stringify({ ownerId: "other-tab", fence: 2, expiresAt: Date.now() + 10_000 }),
+    )
+
+    resolveCheck({ status: "pending" })
+    await flush()
+
+    expect(onLeaderChange).toHaveBeenNthCalledWith(2, false)
+    expect(onLeaderChange).toHaveBeenCalledTimes(2)
+
+    poller.stop()
+  })
+
+  it("fires onTick once per tick that actually ran, with the tracked task count and a non-negative duration", async () => {
+    const store = createPendingTaskStore({ storageKey: "engine-on-tick" })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+    store.getState().addTask({ id: "b", type: "demo", taskId: 2, startedAt: Date.now() })
+
+    const check = vi.fn().mockResolvedValue({ status: "pending" })
+    const onTick = vi.fn()
+    const registry: PendingTaskRegistry = { demo: { check } }
+    const poller = new PendingTaskPoller({ store, registry, onTick })
+
+    poller.forceCheckAll()
+    await flush()
+
+    expect(onTick).toHaveBeenCalledTimes(1)
+    expect(onTick).toHaveBeenCalledWith({ durationMs: expect.any(Number), taskCount: 2 })
+    expect(onTick.mock.calls[0]?.[0].durationMs).toBeGreaterThanOrEqual(0)
+
+    poller.stop()
+  })
+
+  it("does not fire onTick for a tick skipped because no tasks are tracked", async () => {
+    const store = createPendingTaskStore({ storageKey: "engine-on-tick-empty" })
+    const registry: PendingTaskRegistry = {}
+    const onTick = vi.fn()
+    const poller = new PendingTaskPoller({ store, registry, onTick })
+
+    poller.forceCheckAll()
+    await flush()
+
+    expect(onTick).not.toHaveBeenCalled()
+    poller.stop()
+  })
+
+  it("does not fire onTick for an attempt skipped because a tick is already in flight", async () => {
+    const store = createPendingTaskStore({ storageKey: "engine-on-tick-skip-inflight" })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+
+    let resolveCheck!: (value: { status: "pending" }) => void
+    const check = vi.fn()
+    // Only the first call (tick A's) is deferred — the pendingForce-triggered re-run (tick B)
+    // should just resolve immediately, since this test is about counting ticks, not about
+    // controlling tick B's own timing.
+    check.mockImplementationOnce(
+      () =>
+        new Promise<{ status: "pending" }>((resolve) => {
+          resolveCheck = resolve
+        }),
+    )
+    check.mockResolvedValue({ status: "pending" })
+    const onTick = vi.fn()
+    const registry: PendingTaskRegistry = { demo: { check } }
+    const poller = new PendingTaskPoller({ store, registry, onTick })
+
+    poller.forceCheckAll() // tick A starts, check() in flight
+    poller.forceCheckAll() // this attempt is skipped (isChecking) and coalesced into pendingForce
+    await flush()
+    expect(onTick).not.toHaveBeenCalled() // tick A hasn't finished yet
+
+    resolveCheck({ status: "pending" })
+    await flush()
+    await flush() // extra tick for the pendingForce-triggered re-run (tick B) to fully settle
+    // Exactly two ticks actually ran end-to-end: tick A, then the pendingForce-triggered
+    // re-run. If the earlier *skipped* forceCheckAll() attempt had also fired onTick, this
+    // would be 3 instead.
+    expect(onTick).toHaveBeenCalledTimes(2)
+
+    poller.stop()
+  })
+
+  it("calls retryBackoffMs with the correct failureCount on each successive failure", async () => {
+    const store = createPendingTaskStore({ storageKey: "engine-retry-backoff-sequence" })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+
+    const check = vi.fn().mockRejectedValue(new Error("boom"))
+    const retryBackoffMs = vi.fn().mockReturnValue(20)
+    const registry: PendingTaskRegistry = { demo: { check, pollIntervalMs: 20, retryBackoffMs } }
+    const poller = new PendingTaskPoller({ store, registry, maxFailureCount: 10, pollTickMs: 15 })
+
+    poller.forceCheckAll()
+    await flush()
+    expect(check).toHaveBeenCalledTimes(1) // failureCount now 1
+
+    poller.start()
+    await new Promise((resolve) => setTimeout(resolve, 60)) // past the 20ms backoff
+    expect(retryBackoffMs).toHaveBeenCalledWith(1)
+    expect(check.mock.calls.length).toBeGreaterThanOrEqual(2) // failureCount now (at least) 2
+
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(retryBackoffMs).toHaveBeenCalledWith(2)
+
+    poller.stop()
+  })
+
+  it.each([
+    ["NaN", Number.NaN],
+    ["negative", -100],
+    ["Infinity", Number.POSITIVE_INFINITY],
+  ])(
+    "falls back to pollIntervalMs when retryBackoffMs returns an invalid value (%s)",
+    async (_label, invalidValue) => {
+      const store = createPendingTaskStore({ storageKey: `engine-retry-backoff-invalid-${invalidValue}` })
+      store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+
+      const check = vi.fn().mockRejectedValue(new Error("boom"))
+      const retryBackoffMs = vi.fn().mockReturnValue(invalidValue)
+      const registry: PendingTaskRegistry = { demo: { check, pollIntervalMs: 20, retryBackoffMs } }
+      const poller = new PendingTaskPoller({ store, registry, maxFailureCount: 10, pollTickMs: 15 })
+
+      poller.forceCheckAll()
+      await flush()
+      expect(check).toHaveBeenCalledTimes(1) // failureCount now 1
+
+      poller.start()
+      // Past the normal 20ms pollIntervalMs — an invalid backoff value must fall back to it,
+      // not hang forever (NaN) or retry immediately/constantly (negative).
+      await new Promise((resolve) => setTimeout(resolve, 80))
+      expect(check.mock.calls.length).toBeGreaterThanOrEqual(2)
+
+      poller.stop()
+    },
+  )
+
+  it("treats retryBackoffMs returning 0 the same as unset, not as \"always due\"", async () => {
+    // Regression test: the validation guard used to be `backoffMs >= 0`, letting `0` through
+    // as a "valid" backoff — `interval = 0` makes `now - lastChecked >= 0` true the instant
+    // it's checked, i.e. a hot retry loop every tick, exactly what the guard's own comment
+    // said it was supposed to prevent.
+    const store = createPendingTaskStore({ storageKey: "engine-retry-backoff-zero" })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+
+    const check = vi.fn().mockRejectedValue(new Error("boom"))
+    const retryBackoffMs = vi.fn().mockReturnValue(0)
+    const registry: PendingTaskRegistry = { demo: { check, pollIntervalMs: 200, retryBackoffMs } }
+    const poller = new PendingTaskPoller({ store, registry, maxFailureCount: 10, pollTickMs: 15 })
+
+    poller.forceCheckAll()
+    await flush()
+    expect(check).toHaveBeenCalledTimes(1) // failureCount now 1
+
+    poller.start()
+    // Well under the real 200ms pollIntervalMs, but several 15ms ticks' worth of time — if 0
+    // were wrongly trusted as the interval, this task would look due (and get checked) on
+    // essentially every one of those ticks instead of staying quiet until 200ms.
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(check).toHaveBeenCalledTimes(1)
+
+    poller.stop()
+  })
+
+  it("surfaces a retryBackoffMs exception without aborting the rest of the tick's tasks", async () => {
+    const store = createPendingTaskStore({ storageKey: "engine-retry-backoff-throws" })
+    store.getState().addTask({ id: "a", type: "flaky", taskId: 1, startedAt: Date.now() })
+    store.getState().addTask({ id: "b", type: "demo", taskId: 2, startedAt: Date.now() })
+
+    const checkA = vi.fn().mockRejectedValue(new Error("boom"))
+    const retryBackoffMs = vi.fn(() => {
+      throw new Error("bug in retryBackoffMs")
+    })
+    const checkB = vi.fn().mockResolvedValue({ status: "pending" })
+    const registry: PendingTaskRegistry = {
+      flaky: { check: checkA, retryBackoffMs },
+      demo: { check: checkB },
+    }
+    const poller = new PendingTaskPoller({ store, registry, maxFailureCount: 10 })
+
+    poller.forceCheckAll()
+    await flush()
+    expect(checkA).toHaveBeenCalledTimes(1) // task "a"'s failureCount now 1
+    expect(checkB).toHaveBeenCalledTimes(1)
+
+    const surfaced = new Promise<unknown>((resolve) => {
+      onUncaughtException(resolve)
+    })
+    poller.forceCheckAll() // task "a"'s retryBackoffMs(1) now gets called, and throws
+    await flush()
+
+    await expect(surfaced).resolves.toMatchObject({ message: "bug in retryBackoffMs" })
+    // Task "b" must still have been processed normally in the same tick, unaffected by task
+    // "a"'s callback bug.
+    expect(checkB).toHaveBeenCalledTimes(2)
+
+    poller.stop()
+  })
+
+  it("does not permanently freeze the poller if flushBatch throws for any reason", async () => {
+    // Regression test: `isChecking` used to be reset *after* `flushBatch(batch)` in the
+    // `finally` block — if flushBatch throws for any reason, that reset never runs, and every
+    // future tick returns immediately at its own `isChecking` guard forever, with no way to
+    // recover short of constructing a new poller. flushBatch's own dependencies
+    // (readPersistedTasks, writeTasks) already degrade ordinary localStorage failures safely
+    // on their own now, so this simulates something else going wrong inside it instead, to
+    // prove the poller recovers regardless of *why* flushBatch failed.
+    const store = createPendingTaskStore({ storageKey: "engine-flushbatch-throws" })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+
+    const originalWriteTasks = store.writeTasks
+    store.writeTasks = () => {
+      throw new Error("boom")
+    }
+
+    const check = vi.fn().mockResolvedValue({ status: "pending" })
+    const registry: PendingTaskRegistry = { demo: { check } }
+    const poller = new PendingTaskPoller({ store, registry })
+
+    const surfaced = new Promise<unknown>((resolve) => {
+      onUncaughtException(resolve)
+    })
+    poller.forceCheckAll()
+    await flush()
+    await expect(surfaced).resolves.toMatchObject({ message: "boom" })
+
+    // Restore normal behavior and verify the *next* tick still runs — isChecking must not be
+    // stuck at true forever because of the previous tick's flushBatch failure.
+    store.writeTasks = originalWriteTasks
+    poller.forceCheckAll()
+    await flush()
+    expect(check).toHaveBeenCalledTimes(2)
+
+    poller.stop()
+  })
 })
 
 async function flush() {

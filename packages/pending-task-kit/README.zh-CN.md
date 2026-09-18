@@ -21,13 +21,17 @@ pnpm add pending-task-kit zustand
   者由引擎自己维护,之所以作为独立字段,正是为了不与你自己数据里可能用到的 key 冲突)。
   你的应用想附加到任务上的其它任何东西——展示用的标题、链接、用来做归属的用户/租户
   id——都放进完全自由形式的 `metadata` 里;配合 store 的 `pruneTasksBy` 按它过滤。
-- **Handler**(`PendingTaskHandler`)—— 按 `type` 划分,定义 `check(task)`,负责轮询你的
-  后端并返回 `{ status: "pending" | "success" | "failure", progress?, data? }`——`data` 是
-  自由形式的负载(一个链接、一条消息,或任何你 `onResult` 需要的东西;见下文),此外还有
-  按类型调节的选项(`pollIntervalMs`、`ttlMs`、`finalCheckOnExpiry`、
-  `silentOnSuccess`/`silentOnFailure`)。
+- **Handler**(`PendingTaskHandler`)—— 按 `type` 划分,定义 `check(task, signal)`,负责
+  轮询你的后端并返回 `{ status: "pending" | "success" | "failure", progress?, data? }`——
+  `data` 是自由形式的负载(一个链接、一条消息,或任何你 `onResult` 需要的东西;见下文),
+  此外还有按类型调节的选项(`pollIntervalMs`、`ttlMs`、`finalCheckOnExpiry`、
+  `silentOnSuccess`/`silentOnFailure`、`retryBackoffMs`——见下文"取消与重试 backoff"一节)。
+  `signal` 是一个 `AbortSignal`,可以完全不管(只写 `task` 一个参数的现有 handler 不受
+  影响),也可以接进你自己的请求里。
 - **Registry**(`PendingTaskRegistry`)—— 一个普通的 `{ [type]: handler }` 映射。
-- **Store** —— 一个 zustand store,持久化到 `localStorage`,保存任务列表。
+- **Store** —— 一个 zustand store,持久化到 `localStorage`,保存任务列表。跟踪的任务数量
+  超过 `taskListWarnThreshold`(默认 200)时会 `console.warn` 一次——整份列表是单个 JSON
+  blob,每次变化都要整个重写,数量太大会有撞上 ~5MB 单 origin 配额的风险。
 - **Poller**(`PendingTaskPoller`)—— 引擎本体:按间隔扫描任务,调用对应的 handler,并将
   每个任务归结为 `success`/`failure`(通过 `onResult` 派发)、`error`(当 `check()` 本身
   持续抛错直到达到 `maxFailureCount` 时派发,除非设置了 `silentOnFailure`),或者在 TTL
@@ -119,6 +123,40 @@ function PendingTaskNotifier() {
 ```
 
 在应用根部挂载一次 `<PendingTaskNotifier />` 即可。
+
+## 取消、重试 backoff 与观测(均为可选)
+
+`stop()` 会中止当前正在飞行中的那次 `handler.check()` 调用所拿到的 `AbortSignal`(如果
+有的话)——接进你自己的请求里(`fetch(url, { signal })`),就能让一个已停止的 poller
+真正取消掉还在进行的网络请求,而不是等响应回来后才丢弃它。leadership 被另一个标签页
+抢走这件事,永远只能在 `check()` 已经 settle 之后才被发现,所以这是唯一会触发中止的
+时机;不理会 `signal` 的 handler 行为不受任何影响。
+
+`check()` 持续失败时,默认按和其它情况一样固定的 `pollIntervalMs`/
+`defaultPollIntervalMs` 节奏重试——给 handler 设置 `retryBackoffMs(failureCount)`,可以
+在任务至少失败过一次之后改用这个退避策略:
+
+```ts
+const registry = {
+  search: {
+    check: async (task, signal) => { /* ... */ },
+    retryBackoffMs: (failureCount) => Math.min(1_000 * 2 ** failureCount, 60_000), // 有上限的指数退避
+  },
+}
+```
+
+`onLeaderChange(isLeader)` 会在本标签页对"自己是否持有 leadership"的判断发生翻转时
+触发(不是每个 tick 都触发),`onTick({ durationMs, taskCount })` 会在每个真正执行过的
+tick 结束时触发——两者都是纯观测性的,方便接入你自己的监控/日志:
+
+```ts
+const poller = new PendingTaskPoller({
+  store,
+  registry,
+  onLeaderChange: (isLeader) => metrics.gauge("pending_task_poller.is_leader", isLeader ? 1 : 0),
+  onTick: ({ durationMs, taskCount }) => metrics.histogram("pending_task_poller.tick_ms", durationMs),
+})
+```
 
 ## 跨标签页轮询选主(默认开启)
 
@@ -239,6 +277,46 @@ import { clearResultRelay } from "pending-task-kit"
 clearResultRelay(resultRelayKey) // 用你传入的那个 key,没传的话就是 `${storageKey}-result-relay`
 ```
 
+## 运行时环境说明
+
+下面这些行为都是刻意的取舍,不是 bug——集中写在这里,而不是只散落在源码注释里:
+
+- **全链路依赖墙钟(`Date.now()`)**。时钟往回走只会让轮询/续约/去重变慢一点,无害。
+  时钟往前跳可能让一批任务同时静默过期,也可能让 lease/去重记录提前过期——fencing
+  (见"跨标签页轮询选主"一节)仍然保证 leadership 判断是*正确*的,只是那一刻可用性会
+  打折。
+- **leadership 会例行轮换,前台标签页也一样**。lease 的 TTL 默认 8 秒(`pollTickMs` × 4),
+  而且只在*有到期任务要检查*的 tick 上才续约——所以默认 `pollIntervalMs` 为 10 秒时,lease
+  在两次 check 之间本来就会过期,下一个 due 的 tick 重新竞争,谁先到谁当 leader。后台标签页
+  会让这更明显:Chrome(以及其它浏览器)会把后台标签页的计时器节流到最低每分钟一次,正在
+  后台的 leader 很容易把 leadership 让给另一个(可能也在后台的)标签页,甚至两个后台标签页
+  反复交替当 leader。正确性不受影响(Web Locks 保证串行化交接,fencing 兜住任何过期响应),
+  纯粹是浏览器对非活跃标签页本来就有的性能/省电取舍。
+- **`stop()` 不会自动帮你挂 `pagehide`/`beforeunload`**。硬性卸载页面(关掉标签页、
+  跳转离开)会让那一次 tick 的内存 batch 没来得及落盘,这个标签页的 lease 也要等自己的
+  TTL(默认 8 秒)自然过期,而不是立刻释放——这和 `pollLeaseTtlMs` 本来就要兜住的
+  "标签页被关闭/崩溃/冻结"是同一类场景。
+- **React 绑定的"标签页重新聚焦时恢复"没有非 React 版本**。`usePendingTaskPoller` 会在
+  `visibilitychange` 时调用 `forceCheckAll()`;如果你直接用核心 API,想要同样的"切回来
+  别让数据卡在旧状态"效果,需要自己接一下这个事件。
+- **consumer 回调抛出的异常会变成一个 uncaught 异常**,这是故意的——在一个新的
+  microtask 里重新抛出,而不是被静默吞掉或者变成一个 unhandled rejection,这样你自己
+  `onResult`/`onCheckError` 等回调里的 bug 就和你应用里其它 uncaught 错误一样显眼,不会
+  被这个包藏起来。
+- **`zustand` 自己的 `persist` 中间件在存储失败时会打自己的 `console.warn`**(SSR、存储
+  完全不可用等场景)——这条噪音来自 zustand 自身,不是这个包发出的;这个包自己对存储
+  失败的处理是安静降级的(见 `hasUnpersistedWrites`)。
+- **`type` 和 registry 里任何 handler 都对不上的任务**(打错字,或者 handler 在任务创建
+  之后被删除/改名了),会一直挂到 TTL 才过期,期间没有任何提示。把 `TType` 参数化成一个
+  字面量字符串联合类型(而不是留成普通的 `string`),就能对你自己的 registry 做穷举
+  检查。
+- **Playwright 套件(`test-e2e/`)目前只跑 Chromium**——Safari/WebKit 的 `navigator.locks`
+  实现是一个已知的可能存在差异的区域;如果这对你的用户重要,可以给
+  `playwright.config.ts` 加一个 WebKit project。
+- **这个包还是 0.x 版本**。按 semver 对 0.x 的约定,`minor` 版本号升级*可能*包含破坏性
+  改动——0.2.0 就已经动用了这个空间(移除了 CommonJS 构建,见 `CHANGELOG.md`),以后的
+  0.x 版本同样不做稳定性保证。
+
 ## 刻意排除在范围之外的东西
 
 - Toast/通知 UI(`onResult` 只是一个普通回调——UI 部分自己实现)。
@@ -248,3 +326,24 @@ clearResultRelay(resultRelayKey) // 用你传入的那个 key,没传的话就是
   只是个普通闭包,所以它会自然捕获你应用自己用的认证方式;`start()`/`stop()`(或 React
   绑定里的 `enabled`)是你用来控制"是否应该轮询"的开关;`onCheckError` 让你能够识别出一次
   认证失败并做出反应(比如调用 `stop()`),而引擎本身完全不需要知道"未授权"是什么意思。
+
+## 贡献指南
+
+`pnpm typecheck && pnpm lint && pnpm test && pnpm build` 应该全部通过;`pnpm test:e2e`
+会跑一个基于真实 Chromium 的小型 Playwright 套件(`test-e2e/`),专门验证跨标签页
+`navigator.locks` 仲裁和真实的 `storage` 事件——这正是基于 jsdom 的 `pnpm test` 那套
+测试结构性做不到的事。
+
+这个包用 [Changesets](https://github.com/changesets/changesets) 管理版本号。任何应该
+出现在发布记录里的改动都需要一个 changeset:运行 `pnpm changeset`,描述改动内容,选
+`patch`/`minor`/`major`——把生成的文件和你的改动一起提交到 `.changeset/` 下。CI 里的
+`changeset status --since` 检查会让"改了代码却没加 changeset"的 PR 直接失败,不只是
+约定。这个检查不看文件类型,纯文档/CI/测试改动的 PR 也会触发——这种情况的正规逃生口是
+`pnpm changeset --empty`(把它生成的空 changeset 一并提交即可)。
+
+发布是打 tag 触发的(`.github/workflows/release.yml`),不是合并到 main 就自动触发:
+先跑 `pnpm changeset version`(会更新 `package.json` 和 `CHANGELOG.md`),提交这个改动,
+在这个 commit 上打一个和刚刚升级到的版本号一致的 `vX.Y.Z` tag,再推送这个 tag。发布
+job 会对那个 tag 做一次干净的 checkout,从零重新构建、重新跑一遍所有验证,再带着
+`--provenance` 发布——这样发出去的东西永远能追溯到一个打过 tag、经过审查的 commit,
+而不是工作区里当时恰好放着的任何东西。需要一个有发布权限的 `NPM_TOKEN` 仓库密钥。

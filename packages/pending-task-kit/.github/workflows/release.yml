@@ -1,0 +1,46 @@
+name: Release
+
+# Triggered by pushing a `vX.Y.Z` tag — not by merging to main. The expected flow: run
+# `pnpm changeset version` locally (or via a PR), commit the resulting package.json/CHANGELOG.md
+# bump, tag that commit `vX.Y.Z` (matching the version it just bumped to), and push the tag. This
+# job then does a clean checkout of exactly that tag, rebuilds and re-verifies from scratch, and
+# publishes — so what gets published is always provably built from a tagged, reviewed commit,
+# never from whatever happened to be sitting in a working tree.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for `--provenance`
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm run lint
+      - run: pnpm run test
+      - run: pnpm run build
+      - name: Verify the tag matches package.json's version
+        run: |
+          pkg_version="v$(node -p "require('./package.json').version")"
+          tag_version="${GITHUB_REF#refs/tags/}"
+          if [ "$pkg_version" != "$tag_version" ]; then
+            echo "Tag $tag_version does not match package.json version $pkg_version" >&2
+            exit 1
+          fi
+      # `--no-git-checks`: pnpm publish's own git-cleanliness/branch checks don't make sense
+      # against CI's detached-HEAD tag checkout; the tag itself, checked out fresh above, is
+      # the actual provenance guarantee here.
+      - run: pnpm publish --no-git-checks --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

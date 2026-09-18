@@ -24,13 +24,18 @@ pnpm add pending-task-kit zustand
   fields precisely so they can't collide with a key your own data happens to use). Anything
   else your app wants attached to a task — a display title, a link, a user/tenant id to scope
   by — goes in the fully free-form `metadata`; filter on it with the store's `pruneTasksBy`.
-- **Handler** (`PendingTaskHandler`) — per `type`, defines `check(task)` that polls your
-  backend and returns `{ status: "pending" | "success" | "failure", progress?, data? }` —
-  `data` is a free-form payload (a link, a message, whatever your `onResult` needs; see
+- **Handler** (`PendingTaskHandler`) — per `type`, defines `check(task, signal)` that polls
+  your backend and returns `{ status: "pending" | "success" | "failure", progress?, data? }`
+  — `data` is a free-form payload (a link, a message, whatever your `onResult` needs; see
   below), plus per-type tuning (`pollIntervalMs`, `ttlMs`, `finalCheckOnExpiry`,
-  `silentOnSuccess`/`silentOnFailure`).
+  `silentOnSuccess`/`silentOnFailure`, `retryBackoffMs` — see "Cancellation and retry
+  backoff" below). `signal` is an `AbortSignal` you can ignore entirely (existing handlers
+  that only take `task` keep working unmodified) or wire into your own request.
 - **Registry** (`PendingTaskRegistry`) — a plain `{ [type]: handler }` map.
-- **Store** — a zustand store, persisted to `localStorage`, holding the task list.
+- **Store** — a zustand store, persisted to `localStorage`, holding the task list. Warns
+  once (`console.warn`) if the tracked task count crosses `taskListWarnThreshold` (default
+  200) — the whole list is one JSON blob rewritten on every change, so a very large list
+  risks the ~5MB per-origin quota.
 - **Poller** (`PendingTaskPoller`) — the engine: scans tasks on an interval, calls the
   matching handler, and resolves each task to `success`/`failure` (dispatched via
   `onResult`), to `error` (dispatched unless `silentOnFailure`) when `check()` itself kept
@@ -124,6 +129,42 @@ function PendingTaskNotifier() {
 ```
 
 Mount `<PendingTaskNotifier />` once near your app root.
+
+## Cancellation, retry backoff, and observability (all optional)
+
+`stop()` aborts the `AbortSignal` passed to whichever `handler.check()` call is currently in
+flight, if any — wire it into your own request (`fetch(url, { signal })`) if you want a
+stopped poller to actually cancel outstanding network work instead of only discarding the
+response once it arrives. Losing leadership to another tab is only ever discovered *after*
+`check()` has already settled, so that's the only thing that ever aborts it; handlers that
+ignore `signal` keep working exactly as before.
+
+A `check()` that keeps throwing retries on the same fixed `pollIntervalMs`/
+`defaultPollIntervalMs` cadence as everything else by default — set a handler's
+`retryBackoffMs(failureCount)` to back off instead, once a task has actually failed at least
+once:
+
+```ts
+const registry = {
+  search: {
+    check: async (task, signal) => { /* ... */ },
+    retryBackoffMs: (failureCount) => Math.min(1_000 * 2 ** failureCount, 60_000), // capped exponential
+  },
+}
+```
+
+`onLeaderChange(isLeader)` fires when this tab's own belief about holding poll leadership
+flips (not once per tick), and `onTick({ durationMs, taskCount })` fires at the end of every
+tick that actually ran — both purely observational, for wiring into your own metrics/logging:
+
+```ts
+const poller = new PendingTaskPoller({
+  store,
+  registry,
+  onLeaderChange: (isLeader) => metrics.gauge("pending_task_poller.is_leader", isLeader ? 1 : 0),
+  onTick: ({ durationMs, taskCount }) => metrics.histogram("pending_task_poller.tick_ms", durationMs),
+})
+```
 
 ## Cross-tab poll-leader election (on by default)
 
@@ -254,6 +295,52 @@ import { clearResultRelay } from "pending-task-kit"
 clearResultRelay(resultRelayKey) // same key you passed, or `${storageKey}-result-relay`
 ```
 
+## Runtime environment notes
+
+A grab-bag of behaviors that are intentional trade-offs rather than bugs, collected here so
+they're documented somewhere instead of only in source comments:
+
+- **Wall-clock dependent** (`Date.now()` throughout). A clock stepping *backward* just delays
+  polling/lease-renewal/dedupe harmlessly. A clock jumping *forward* can make a batch of tasks
+  expire silently all at once and make leases/dedupe records expire early — fencing (see
+  "Cross-tab poll-leader election") still keeps leadership *correct* through that, just less
+  available for a moment.
+- **Leadership rotates routinely, even in foreground tabs.** The lease's TTL defaults to 8s
+  (`pollTickMs` × 4), and it's only *renewed* by ticks that actually have a due task to check
+  — so with the default 10s `pollIntervalMs` the lease expires between checks anyway and the
+  next due tick re-contends for it, in whichever tab gets there first. Backgrounded tabs make
+  this much more pronounced: Chrome (and others) throttle a backgrounded tab's timers down to
+  as infrequently as once a minute, so a backgrounded leader readily loses leadership to
+  another (possibly also backgrounded) tab, and two backgrounded tabs can end up trading
+  leadership back and forth. Correctness is unaffected (Web Locks serialize the handoff,
+  fencing catches any stale response) — it's purely a responsiveness/battery trade-off already
+  inherent to how browsers treat inactive tabs.
+- **`stop()` doesn't hook `pagehide`/`beforeunload` for you.** A hard page unload (closing the
+  tab, navigating away) leaves that tick's in-memory batch unflushed and this tab's lease to
+  expire on its own TTL (default 8s) rather than being released immediately — the same
+  "closed/crashed/frozen tab" case `pollLeaseTtlMs` is already designed to bound.
+- **The React binding's tab-refocus recovery has no non-React equivalent.**
+  `usePendingTaskPoller` calls `forceCheckAll()` on `visibilitychange`; if you're using the core
+  API directly, wire that up yourself if you want the same "don't sit stale after tabbing back
+  in" behavior.
+- **A consumer callback that throws becomes an uncaught exception**, deliberately — surfaced on
+  a fresh microtask rather than silently swallowed or left as an unhandled rejection, so a bug
+  in your own `onResult`/`onCheckError`/etc. is as visible as any other uncaught error in your
+  app, not hidden inside this package.
+- **`zustand`'s own `persist` middleware logs its own `console.warn` on a storage failure** (SSR,
+  storage fully unavailable) — that noise comes from zustand itself, not from this package,
+  which otherwise degrades storage failures quietly (see `hasUnpersistedWrites`).
+- **A task whose `type` doesn't match any registry entry** (typo'd, or a handler that was
+  removed/renamed after the task was created) just sits until its TTL expires, with no warning.
+  Parameterize `TType` with a literal string union (rather than leaving it as plain `string`) to
+  get exhaustiveness checking on your own registry instead.
+- **The Playwright suite (`test-e2e/`) only runs against Chromium** — Safari/WebKit's
+  `navigator.locks` implementation is a known area where behavior could differ; add a WebKit
+  project to `playwright.config.ts` if that matters for your users.
+- **This package is pre-1.0.** Per semver convention for `0.x`, a `minor` bump *may* include a
+  breaking change — 0.2.0 already exercises that by dropping the CommonJS build (see
+  `CHANGELOG.md`), and future `0.x` releases make no stability guarantee either.
+
 ## What's deliberately out of scope
 
 - Toast/notification UI (`onResult` is a plain callback — bring your own).
@@ -264,3 +351,26 @@ clearResultRelay(resultRelayKey) // same key you passed, or `${storageKey}-resul
   `start()`/`stop()` (or the React binding's `enabled`) are how you gate polling on being
   logged in; `onCheckError` lets you recognize an auth failure and react to it (e.g. call
   `stop()`) without the engine knowing what "unauthorized" means.
+
+## Contributing
+
+`pnpm typecheck && pnpm lint && pnpm test && pnpm build` should all pass; `pnpm test:e2e` runs
+a small real-Chromium Playwright suite (`test-e2e/`) that specifically exercises cross-tab
+`navigator.locks` arbitration and genuine `storage` events — the one thing the jsdom-based
+`pnpm test` suite structurally can't do.
+
+This package uses [Changesets](https://github.com/changesets/changesets) for versioning.
+Every change that should land in a release needs a changeset: run `pnpm changeset`, describe
+the change, and pick `patch`/`minor`/`major` — commit the generated file in `.changeset/`
+alongside your change. CI's `changeset status --since` check fails a PR that changed something
+without one, so this isn't just a convention. The check doesn't look at file types, so a
+docs/CI/test-only PR trips it too — `pnpm changeset --empty` is the sanctioned escape hatch
+for those (commit the empty changeset it generates).
+
+Releases are tag-triggered (`.github/workflows/release.yml`), not merge-triggered: run
+`pnpm changeset version` (bumps `package.json` and updates `CHANGELOG.md`), commit that, tag the
+commit `vX.Y.Z` matching the version it just bumped to, and push the tag. The release job then
+does a clean checkout of exactly that tag, rebuilds and re-verifies everything from scratch, and
+publishes with `--provenance` — so what gets published is always traceable to a tagged, reviewed
+commit, never to whatever happened to be sitting in a working tree. Needs an `NPM_TOKEN` repo
+secret with publish access.

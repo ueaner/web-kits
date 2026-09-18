@@ -14,6 +14,7 @@ export {
   isPendingTaskShape,
   parseTasksFromStorageValue,
   DEFAULT_STORAGE_KEY,
+  DEFAULT_TASK_LIST_WARN_THRESHOLD,
   DEFAULT_TTL_MS,
 } from "./store"
 export type { CreatePendingTaskStoreOptions, PendingTaskStore, PendingTaskStoreState } from "./store"

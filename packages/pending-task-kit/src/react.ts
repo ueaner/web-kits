@@ -45,6 +45,8 @@ export function usePendingTaskPoller<TType extends string = string>(
       claimResultOnce: (task) =>
         optionsRef.current.claimResultOnce ? optionsRef.current.claimResultOnce(task) : true,
       acceptRelayedResult: (detail) => optionsRef.current.acceptRelayedResult?.(detail) ?? true,
+      onLeaderChange: (isLeader) => optionsRef.current.onLeaderChange?.(isLeader),
+      onTick: (info) => optionsRef.current.onTick?.(info),
     })
     poller.start()
 
