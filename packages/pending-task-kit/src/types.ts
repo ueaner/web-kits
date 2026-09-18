@@ -50,9 +50,34 @@ export interface PendingTaskCheckResult {
 }
 
 export interface PendingTaskHandler<TType extends string = string> {
-  check: (task: PendingTask<TType>) => Promise<PendingTaskCheckResult>
+  /**
+   * `signal` is aborted when the poller is `stop()`-ed while this particular call is still in
+   * flight (nothing else aborts it — losing leadership to another tab is only ever discovered
+   * *after* `check()` has already settled, so there's nothing in-flight left to cancel at that
+   * point; see `PendingTaskPoller`'s class doc comment). Wire it into your own request (e.g.
+   * `fetch(url, { signal })`) if you want a stopped poller to actually cancel outstanding
+   * network work instead of just discarding the response when it eventually arrives. Handlers
+   * that ignore the parameter keep working exactly as before — nothing requires reading it.
+   */
+  check: (task: PendingTask<TType>, signal: AbortSignal) => Promise<PendingTaskCheckResult>
   /** How often (ms) this task type is checked. Defaults to the poller's `defaultPollIntervalMs`. */
   pollIntervalMs?: number
+  /**
+   * Optional backoff for the failure-retry cadence specifically — a `check()` that keeps
+   * throwing, before `maxFailureCount` is reached. Given the just-incremented failure count,
+   * return the delay (ms) before the next retry. Only consulted once a task has actually failed
+   * at least once; a task that's still cleanly polling (never failed, or already recovered back
+   * to `failureCount` 0) keeps using `pollIntervalMs`/`defaultPollIntervalMs` regardless. Leave
+   * unset to keep today's behavior: failures retry on the same fixed cadence as everything else.
+   *
+   * A non-finite or non-positive return (`NaN`, `Infinity`, `0`, negative) falls back to the
+   * normal `pollIntervalMs`/`defaultPollIntervalMs` cadence rather than being trusted outright
+   * — `0`/negative would otherwise retry on essentially every tick, and `NaN` would make the
+   * task never look due again. A throw is treated the same way (as if unset for this task this
+   * tick) and surfaced as an uncaught exception rather than either being silently swallowed or
+   * taking down the rest of the tick's tasks — the same treatment `onCheckError` gets.
+   */
+  retryBackoffMs?: (failureCount: number) => number
   /** How long (ms) an untracked-to-completion task is kept before being dropped. */
   ttlMs?: number
   /** Force one last `check()` exactly at TTL expiry instead of silently dropping the task. */

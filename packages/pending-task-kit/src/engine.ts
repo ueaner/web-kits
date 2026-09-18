@@ -139,6 +139,23 @@ export interface PendingTaskPollerOptions<TType extends string = string> {
    * awaiting inline.
    */
   acceptRelayedResult?: (detail: PendingTaskResultEventDetail<TType>) => boolean
+  /**
+   * Fires whenever *this tab's* belief about whether it currently holds poll leadership flips
+   * (claimed for the first time, or lost to another tab / this poller being `stop()`-ed) — not
+   * on every tick, only on an actual change. Only meaningful (and only ever called) when
+   * `crossTabPollLeaderElection` is on; there's no "leader" concept to report when it's off.
+   * Purely observational — wire it into your own metrics/logging, the engine's behavior doesn't
+   * change based on whether this is set.
+   */
+  onLeaderChange?: (isLeader: boolean) => void
+  /**
+   * Fires once at the end of every tick that actually ran (ticks skipped because one was
+   * already in flight, or because there were no tasks at all, don't count). `taskCount` is how
+   * many tasks were in the store when the tick started (not just the due ones); `durationMs`
+   * covers the whole tick, including every awaited `handler.check()` call, since this engine
+   * processes a tick's due tasks sequentially. Purely observational, same as `onLeaderChange`.
+   */
+  onTick?: (info: { durationMs: number; taskCount: number }) => void
 }
 
 function describeError(error: unknown): string {
@@ -161,21 +178,32 @@ function describeError(error: unknown): string {
  * Framework bindings (see `./react`) are thin wrappers that call `start()`/`stop()` at the
  * right lifecycle moments and expose `forceCheckAll()` for e.g. tab-focus recovery.
  *
- * Note: `stop()` prevents any *new* tick from starting, but a tick already awaiting
- * `handler.check()` when `stop()` is called will still run to completion (there is no
- * `AbortSignal` plumbed into the handler contract). Design handlers to be safe to finish
- * even if the caller has logically "stopped" — e.g. don't assume side effects are undone.
+ * Note: `stop()` prevents any *new* tick from starting, and aborts the `AbortSignal` passed to
+ * whatever `handler.check()` call is currently in flight (if any) — but only handlers that
+ * actually wire that signal into their own request will see it actually cancelled; one that
+ * ignores it still runs to completion. Design handlers to be safe to finish even if the caller
+ * has logically "stopped" regardless — e.g. don't assume side effects are undone.
  */
 export class PendingTaskPoller<TType extends string = string> {
   private readonly options: Required<
     Omit<
       PendingTaskPollerOptions<TType>,
-      "onResult" | "onCheckError" | "claimResultOnce" | "acceptRelayedResult"
+      | "onResult"
+      | "onCheckError"
+      | "claimResultOnce"
+      | "acceptRelayedResult"
+      | "onLeaderChange"
+      | "onTick"
     >
   > &
     Pick<
       PendingTaskPollerOptions<TType>,
-      "onResult" | "onCheckError" | "claimResultOnce" | "acceptRelayedResult"
+      | "onResult"
+      | "onCheckError"
+      | "claimResultOnce"
+      | "acceptRelayedResult"
+      | "onLeaderChange"
+      | "onTick"
     >
 
   /** Stable for this instance's whole lifetime — e.g. one `PendingTaskPoller` construction per
@@ -190,6 +218,15 @@ export class PendingTaskPoller<TType extends string = string> {
   private pendingForce = false
   private stopped = false
   private latestTasksCache: { tasks: PendingTask<TType>[]; byId: Map<string, PendingTask<TType>> } | undefined
+  /** This tab's own most recently reported leadership status, for `onLeaderChange` — tracked
+   *  here (rather than derived fresh each time from `fence`) purely so that callback fires only
+   *  on an actual flip, not once per tick it happens to still hold/still lack leadership. */
+  private isLeaderTab = false
+  /** The `AbortController` backing whichever `handler.check()` call is currently in flight, if
+   *  any — reachable from `stop()` (a synchronous method with no other way to reach into an
+   *  in-progress `runTick`) so it can actually cancel that request. See `PendingTaskHandler.check`'s
+   *  doc comment for why this is the *only* thing that ever aborts it. */
+  private inFlightAbortController: AbortController | undefined
   /** Task ids that already got their one `finalCheckOnExpiry` attempt, so a repeatedly-failing
    *  final check doesn't get retried every tick. Reset on process restart — worst case that
    *  costs one extra check, never an infinite retry loop.
@@ -223,6 +260,8 @@ export class PendingTaskPoller<TType extends string = string> {
       onCheckError: options.onCheckError,
       claimResultOnce: options.claimResultOnce,
       acceptRelayedResult: options.acceptRelayedResult,
+      onLeaderChange: options.onLeaderChange,
+      onTick: options.onTick,
     }
     this.ownerId = generatePollOwnerId()
     this.pollLease = createPollLeaseClaimer(this.options.pollLeaseKey, this.options.pollLeaseTtlMs)
@@ -279,6 +318,10 @@ export class PendingTaskPoller<TType extends string = string> {
   stop(): void {
     this.stopped = true
     this.pendingForce = false
+    // Cancels whatever handler.check() call is currently in flight, if any — the one moment
+    // this poller can proactively act on rather than just discarding a response after the fact
+    // once it arrives; see PendingTaskHandler.check's doc comment.
+    this.inFlightAbortController?.abort()
 
     if (this.intervalId !== undefined) {
       clearInterval(this.intervalId)
@@ -294,6 +337,7 @@ export class PendingTaskPoller<TType extends string = string> {
       // of being released early; see PollLeaseClaimer.release's doc comment for why that's
       // still safe rather than blocking every other tab.
       void this.releaseLeadership().catch(() => undefined)
+      this.setLeaderStatus(false)
     }
   }
 
@@ -304,6 +348,27 @@ export class PendingTaskPoller<TType extends string = string> {
 
   private claimLeadership(): Promise<PollLeaseClaimResult> {
     return withTabLock(this.options.pollLeaseKey, () => this.pollLease.claim(this.ownerId))
+  }
+
+  /** Updates `isLeaderTab` and fires `onLeaderChange`, but only on an actual flip — see that
+   *  option's doc comment, including the "only ever called when `crossTabPollLeaderElection` is
+   *  on" part, which this enforces itself rather than relying on every call site to remember to
+   *  guard it (a call site that forgot would otherwise be a real, undetected bug — the whole
+   *  reason this guard lives here instead of at each of this method's several call sites). Safe
+   *  to call redundantly (e.g. after every successful claim/reconfirm in a tick, not just the
+   *  first) since a no-op call is just an equality check. */
+  private setLeaderStatus(isLeader: boolean): void {
+    if (!this.options.crossTabPollLeaderElection) return
+    if (this.isLeaderTab === isLeader) return
+    this.isLeaderTab = isLeader
+    try {
+      this.options.onLeaderChange?.(isLeader)
+    } catch (error) {
+      // Same treatment as every other consumer callback in this file — surface it, don't hide it.
+      queueMicrotask(() => {
+        throw error
+      })
+    }
   }
 
   /**
@@ -327,16 +392,27 @@ export class PendingTaskPoller<TType extends string = string> {
     expired: boolean,
     fence: number | undefined,
   ): Promise<number | undefined | false> {
-    if (!this.options.crossTabPollLeaderElection) return fence
     if (this.stopped) {
-      // stop() has already (best-effort) released this tab's own lease so another tab doesn't
-      // have to wait out the full TTL — reclaiming it here, even just to immediately discard a
-      // stale response, would write a brand-new full-TTL lease that nothing will ever renew
-      // (this poller is stopped), undoing exactly that. Treat "stopped" the same as "leadership
-      // lost" without ever attempting to reclaim.
+      // Checked *before* the crossTabPollLeaderElection early-return below, deliberately: a
+      // stopped poller's `stop()` unconditionally aborts whatever `handler.check()` call is
+      // currently in flight (see PendingTaskHandler.check's doc comment) regardless of whether
+      // election is on, so a handler that wired the signal into its own request can genuinely
+      // throw an AbortError here even with election off. That response must be discarded the
+      // same way an election-on stale response would be — treating a self-inflicted abort as a
+      // real `check()` failure would wrongly bump `failureCount`, run `onCheckError`, and could
+      // even dispatch `onResult` on an already-stopped poller. Reordering these two checks was
+      // the actual fix for that bug — returning `fence` (not `false`) here first, unconditional
+      // on `stopped`, is what let it happen.
+      //
+      // Also means `stop()` has already (best-effort) released this tab's own lease when
+      // election is on, so another tab doesn't have to wait out the full TTL — reclaiming it
+      // here, even just to immediately discard a stale response, would write a brand-new
+      // full-TTL lease that nothing will ever renew (this poller is stopped), undoing exactly
+      // that. Treat "stopped" the same as "leadership lost" without ever attempting to reclaim.
       if (expired) this.finalCheckAttempted.delete(task.id)
       return false
     }
+    if (!this.options.crossTabPollLeaderElection) return fence
     let result: PollLeaseClaimResult
     try {
       result = await this.claimLeadership()
@@ -517,8 +593,10 @@ export class PendingTaskPoller<TType extends string = string> {
 
     this.isChecking = true
     const batch = new Map<string, Partial<PendingTask<TType>> | null>()
+    // Declared here, not inside the try below, so the `finally` block's `onTick` can compute
+    // this whole tick's wall-clock duration from it.
+    const now = Date.now()
     try {
-      const now = Date.now()
       // Claimed lazily by the first task in this tick that actually needs leadership, then
       // carried forward for the rest of the tick: every task that reaches its own check()
       // re-confirms (and thereby renews) leadership right after, updating `fence` for whichever
@@ -548,7 +626,37 @@ export class PendingTaskPoller<TType extends string = string> {
           continue
         }
 
-        const interval = handler.pollIntervalMs ?? this.options.defaultPollIntervalMs
+        // A task that has already failed at least once and has `retryBackoffMs` configured
+        // uses that for its retry cadence instead of the normal pollIntervalMs/
+        // defaultPollIntervalMs — unset (the default), or a task that's never failed (or has
+        // already recovered back to failureCount 0), computes `interval` exactly as before.
+        const failureCount = task.failureCount ?? 0
+        let backoffMs: number | undefined
+        if (failureCount > 0) {
+          try {
+            backoffMs = handler.retryBackoffMs?.(failureCount)
+          } catch (retryBackoffMsError) {
+            // retryBackoffMs is documented to return a number, not throw — a throw here is a
+            // consumer callback bug, same category as an `onCheckError` throw just below. Fall
+            // through to the normal interval below (as if unset) rather than letting it take
+            // down the rest of this tick's tasks; surface it the same way `runTickSafely`
+            // surfaces any other consumer-callback exception.
+            queueMicrotask(() => {
+              throw retryBackoffMsError
+            })
+            backoffMs = undefined
+          }
+        }
+        // A non-finite or non-positive return is treated the same as "not configured" rather
+        // than trusted outright: `0`/negative would make this task retry on essentially every
+        // tick (a tight loop against your backend — `now - lastChecked >= 0` is true the
+        // instant it's checked), and NaN would make it never look due again by this comparison
+        // (`>= NaN` is always false) — falling back to the normal interval is the safe default
+        // in both cases, not a retry storm or a silent hang.
+        const interval =
+          backoffMs !== undefined && Number.isFinite(backoffMs) && backoffMs > 0
+            ? backoffMs
+            : handler.pollIntervalMs ?? this.options.defaultPollIntervalMs
         const lastChecked = task.lastCheckedAt ?? task.startedAt
         const due = force || now - lastChecked >= interval
         const finalAttemptDone = this.finalCheckAttempted.has(task.id)
@@ -602,18 +710,32 @@ export class PendingTaskPoller<TType extends string = string> {
               if (expired) this.finalCheckAttempted.delete(task.id)
               throw error
             }
-            if (!claimed.leader) {
+            // Also re-checks `this.stopped` here, not just before the `await` above: `stop()`
+            // is a genuine async yield away (real cross-tab Web Lock arbitration), so it can
+            // land while this call was pending. Claiming succeeded and nothing here would be
+            // outright wrong to act on, but proceeding to call handler.check() on an
+            // already-stopped poller is exactly the wasted/misleading work this whole check
+            // exists to prevent.
+            if (this.stopped || !claimed.leader) {
               leadershipLost = true
+              this.setLeaderStatus(false)
               if (expired) this.finalCheckAttempted.delete(task.id)
               continue
             }
             fence = claimed.fence
+            this.setLeaderStatus(true)
           }
         }
 
         let result: PendingTaskCheckResult
+        // Reachable from stop() (a synchronous method) so a stopped poller can actually cancel
+        // this request instead of only discarding its response once it arrives — see
+        // PendingTaskHandler.check's doc comment. Cleared in `finally` below regardless of
+        // outcome, so stop() never holds onto a controller for a request that already settled.
+        const abortController = new AbortController()
+        this.inFlightAbortController = abortController
         try {
-          result = await handler.check(task)
+          result = await handler.check(task, abortController.signal)
         } catch (error) {
           // handler.check()'s own request duration isn't bounded by the lease renewal cadence
           // above — a single slow call can still outlast pollLeaseTtlMs, letting another tab
@@ -632,9 +754,11 @@ export class PendingTaskPoller<TType extends string = string> {
             // that flag exists to prevent.
             leadershipLost = true
             fence = undefined
+            this.setLeaderStatus(false)
             continue
           }
           fence = reconfirmedOnError
+          this.setLeaderStatus(true)
 
           let intercepted: boolean | void
           try {
@@ -677,6 +801,8 @@ export class PendingTaskPoller<TType extends string = string> {
             batch.set(task.id, { lastCheckedAt: now, failureCount })
           }
           continue
+        } finally {
+          if (this.inFlightAbortController === abortController) this.inFlightAbortController = undefined
         }
 
         // Same staleness concern as the catch branch above, for the success path: a late
@@ -691,9 +817,11 @@ export class PendingTaskPoller<TType extends string = string> {
           // for any later task this tick.
           leadershipLost = true
           fence = undefined
+          this.setLeaderStatus(false)
           continue
         }
         fence = reconfirmedOnSuccess
+        this.setLeaderStatus(true)
 
         if (result.status === "pending") {
           const latest = this.getLatestTask(task)
@@ -714,8 +842,34 @@ export class PendingTaskPoller<TType extends string = string> {
         await this.finalize(task, { status: result.status, data: result.data }, handler, batch)
       }
     } finally {
-      this.flushBatch(batch)
+      // Reset first, unconditionally, before flushBatch below — not after it: if flushBatch
+      // throws for any reason, `isChecking` must not be left stuck at `true` forever, or every
+      // future tick would return immediately at its own `isChecking` guard, permanently and
+      // silently freezing this poller with no way to recover short of constructing a new
+      // instance. Safe to reorder — flushBatch is fully synchronous, so there's no window for
+      // another tick to start between this line and it running.
       this.isChecking = false
+      try {
+        this.flushBatch(batch)
+      } catch (error) {
+        // flushBatch's own dependencies (readPersistedTasks, writeTasks) already degrade
+        // localStorage failures safely on their own — this is a last-resort safety net for
+        // anything else unexpected, surfaced the same way every other consumer-adjacent
+        // exception in this file is: queued, not silently swallowed, and not left to take the
+        // rest of this finally block's work (onTick, pendingForce) down with it.
+        queueMicrotask(() => {
+          throw error
+        })
+      }
+      if (this.options.onTick) {
+        try {
+          this.options.onTick({ durationMs: Date.now() - now, taskCount: tasks.length })
+        } catch (error) {
+          queueMicrotask(() => {
+            throw error
+          })
+        }
+      }
       if (this.pendingForce && !this.stopped) {
         this.pendingForce = false
         this.runTickSafely(true)
