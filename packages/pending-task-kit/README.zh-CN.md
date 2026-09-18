@@ -189,9 +189,24 @@ const notified = createTtlDedupeCache("my-app-pending-task-notified", 24 * 60 * 
 
 const poller = new PendingTaskPoller({
   // ...
-  claimResultOnce: (task) => withTabLock(`pending-task:${task.id}`, () => notified.claim(task.id)),
+  claimResultOnce: (task) =>
+    withTabLock(`pending-task:${task.id}`, () =>
+      notified.claim(`${task.id}:${task.startedAt}`),
+    ),
 })
 ```
+
+去重的 key 要用 `` `${task.id}:${task.startedAt}` ``,不能只用 `task.id`。`id` 的文档
+(见 `PendingTask.id` 的 doc 注释)写的是"稳定、全局唯一——用同一个 id 重新 addTask 会替换掉
+原来那条",也就是说同一个 id 完全可以在不同时间点先后对应好几轮互不相关的独立任务
+(比如用户同一天内两次触发同一个付费动作)。只按裸 `task.id` 去重分不清这几轮:
+去重记录的 TTL 必须比单轮任务自己的生命周期还长——另一个标签页完全可能更晚才到达同一次完成
+(`claimResultOnce` 等待耗时、冻结的标签页被唤醒、到期时的 `finalCheckOnExpiry`),记录必须
+在那时还在——这就意味着它同样会覆盖到第二轮、完全独立的那次完成:第二轮的 `onResult`/广播
+派发会被当成"第一轮的重复"直接吞掉。`startedAt` 是每次真正新开一轮任务时才写入的时间戳
+(见 `addTask` doc 注释里"同 id 会替换"的说明),而两个标签页在竞争**同一轮**任务时看到的
+`startedAt` 是相同的——拼上它能把去重粒度收紧到"这一轮",既不会误伤下一轮独立的完成结果,
+也不会打开这一节本来要堵上的跨标签页竞态口子。
 
 如果 `claimResultOnce` 判断依据的内容(或者它跟踪的任务的 `metadata`/`data` 字段)可能
 带 PII,在用户主动登出时也调用一下 `notified.clear()`,跟下面"任务归属范围"一节里

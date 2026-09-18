@@ -200,9 +200,26 @@ const notified = createTtlDedupeCache("my-app-pending-task-notified", 24 * 60 * 
 
 const poller = new PendingTaskPoller({
   // ...
-  claimResultOnce: (task) => withTabLock(`pending-task:${task.id}`, () => notified.claim(task.id)),
+  claimResultOnce: (task) =>
+    withTabLock(`pending-task:${task.id}`, () =>
+      notified.claim(`${task.id}:${task.startedAt}`),
+    ),
 })
 ```
+
+Key the claim on `` `${task.id}:${task.startedAt}` ``, not on `task.id` alone. `id` is
+documented as "stable, globally-unique — re-adding a task with the same id replaces it" (see
+the `PendingTask.id` doc comment), so the *same* id can legitimately front several independent
+runs over time (e.g. a user re-triggering the same paid action twice in one day). A cache
+keyed on bare `task.id` doesn't distinguish those runs: the TTL window has to outlive one
+run's own lifetime — a second tab can legitimately reach the same completion late (a slow
+`claimResultOnce` await, a frozen tab waking up, an expiry-time `finalCheckOnExpiry`), so the
+record must still be there when it does — which means it also spans across a second, unrelated
+run's completion: that second completion's `onResult`/relayed dispatch gets silently swallowed
+as if it were a duplicate of the first. `startedAt` is written fresh each time a *new* run is
+added (see the `addTask` doc comment's replace-on-same-id note), while two tabs racing over
+the *same* run still see the same `startedAt` — so appending it narrows the dedupe to "this
+run" without reopening the cross-tab race this section exists to close.
 
 If whatever `claimResultOnce` gates on (or `metadata`/`data` fields in the tasks it tracks) can
 carry PII, call `notified.clear()` on explicit logout the same way you'd call the store's
