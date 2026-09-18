@@ -26,10 +26,6 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run typecheck
-      - run: pnpm run lint
-      - run: pnpm run test
-      - run: pnpm run build
       - name: Verify the tag matches package.json's version
         run: |
           pkg_version="v$(node -p "require('./package.json').version")"
@@ -38,6 +34,12 @@ jobs:
             echo "Tag $tag_version does not match package.json version $pkg_version" >&2
             exit 1
           fi
+      # build must precede typecheck: the test-e2e project imports ../dist/index.js directly
+      # (a smoke test of the real build output), so its typecheck needs dist/ to exist.
+      - run: pnpm run build
+      - run: pnpm run typecheck
+      - run: pnpm run lint
+      - run: pnpm run test
       # `--no-git-checks`: pnpm publish's own git-cleanliness/branch checks don't make sense
       # against CI's detached-HEAD tag checkout; the tag itself, checked out fresh above, is
       # the actual provenance guarantee here.
