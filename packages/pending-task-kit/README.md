@@ -125,10 +125,73 @@ function PendingTaskNotifier() {
 
 Mount `<PendingTaskNotifier />` once near your app root.
 
+## Cross-tab poll-leader election (on by default)
+
+When multiple tabs share the same store — they already do, since tasks sync across tabs via
+`storage` events — only one of them actually calls `handler.check()` for a given task at a
+time; every other tab skips its own network work for that task entirely. This is
+`crossTabPollLeaderElection`, on by default. It's safe to leave on for single-tab usage too:
+an uncontested poller always successfully claims/renews its own lease, so nothing changes when
+there's no other tab to contend with.
+
+Leadership is a renewable, TTL-backed claim (`pollLeaseTtlMs`, default `pollTickMs * 4`), not
+a held lock — a leader that stops renewing (closed, crashed, or frozen in the browser's
+back/forward cache) can't block every other tab forever; the lease just expires and any other
+open tab picks up leadership on its next tick. `stop()` also makes a best-effort attempt to
+release the lease right away if held (fire-and-forget, since `stop()` itself is synchronous —
+an abrupt page unload can still lose the race), so a graceful shutdown usually doesn't make
+other tabs wait out the full TTL either.
+
+Since only the leader ever detects a task's completion, its result is relayed to every other
+tab through a second localStorage key (`resultRelayKey`, default
+`` `${storageKey}-result-relay` ``): each other tab fires its own `onResult` and (if that tab
+also has `dispatchDomEvent` on) its own `CustomEvent`, from the relayed data, the same as if it
+had detected the completion itself. If you've composed `claimResultOnce` (see the next
+section), the relayed dispatch on every other tab goes through that same gate as the leader's
+own local one — combining both gets you "only the leader polls" *and* "at most one tab ends up
+notifying," consistently, regardless of which tab happened to detect the result.
+
+Only one `PendingTaskPoller` instance should exist per tab per store — a `storage` event never
+fires back in the tab that made the write, so a second poller instance sharing the same store
+in the *same* tab would never receive this relay (or the task-list sync above) at all.
+
+If a relayed result could belong to a session that's ended in *this* tab by the time it
+arrives (a different account signed in, a logout) and re-surfacing it here would be wrong,
+gate the receiving side with `acceptRelayedResult`:
+
+```ts
+const poller = new PendingTaskPoller({
+  store,
+  registry,
+  acceptRelayedResult: (detail) => detail.task.metadata?.userId === myAuthStore.getState().userId,
+})
+```
+
+Turn cross-tab leader election off entirely only if you have a specific reason every tab must
+independently poll everything:
+
+```ts
+const poller = new PendingTaskPoller({
+  store,
+  registry,
+  crossTabPollLeaderElection: false,
+})
+```
+
 ## Cross-tab duplicate-toast dedupe (optional)
 
-If several tabs can end up processing the same task's completion (e.g. after a
-forced re-login race), compose the included primitives via `claimResultOnce`:
+`crossTabPollLeaderElection` above stops tabs from duplicating the *polling* itself, and a
+fencing check keeps a slow `check()` call from letting a *different* tab also reach `finalize()`
+for the same task after leadership has moved on mid-request. It doesn't guarantee `onResult`
+fires exactly once system-wide on its own, though — narrower windows remain: your own
+`claimResultOnce` callback awaiting something slow can itself let leadership move to another tab
+before it resolves, which then independently completes the same task and calls its own
+`claimResultOnce`; `withTabLock` degrades to no mutual exclusion at all in a browser without the
+Web Locks API; and a lease write that silently fails (quota exceeded, private-mode Safari) can,
+rarely, let two tabs both believe they're leader. If several tabs can end up processing the same
+completion (any of those, or a forced re-login race), compose the included primitives via
+`claimResultOnce` — this also gates the *relayed* dispatch on every other tab (see above), so it
+gives you a true system-wide guarantee even with leader election on:
 
 ```ts
 import { withTabLock, createTtlDedupeCache } from "pending-task-kit"
@@ -140,6 +203,10 @@ const poller = new PendingTaskPoller({
   claimResultOnce: (task) => withTabLock(`pending-task:${task.id}`, () => notified.claim(task.id)),
 })
 ```
+
+If whatever `claimResultOnce` gates on (or `metadata`/`data` fields in the tasks it tracks) can
+carry PII, call `notified.clear()` on explicit logout the same way you'd call the store's
+`clearAllTasks()` — see "Scoping tasks" below.
 
 ## Scoping tasks (e.g. to a user/tenant)
 
@@ -157,6 +224,18 @@ login and `clearAllTasks()` on explicit logout yourself, in whatever auth store 
 Skipping `clearAllTasks()` on a *forced* (e.g. 401) logout lets in-flight tasks (like a pending
 payment confirmation) survive a quick re-login — that's an intentional choice to make, not a
 default this package bakes in.
+
+If a task's `metadata` or a handler's `PendingTaskCheckResult.data` can carry PII, remember
+this can now also transiently sit in the `resultRelayKey` localStorage entry (see "Cross-tab
+poll-leader election" above) once `crossTabPollLeaderElection` is on — it's overwritten by the
+next result, but nothing clears it proactively. Clear it on explicit logout the same way you'd
+call the store's `clearAllTasks()` or a dedupe cache's `clear()`:
+
+```ts
+import { clearResultRelay } from "pending-task-kit"
+
+clearResultRelay(resultRelayKey) // same key you passed, or `${storageKey}-result-relay`
+```
 
 ## What's deliberately out of scope
 

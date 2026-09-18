@@ -52,7 +52,7 @@ export interface CreatePendingTaskStoreOptions {
   storageKey?: string
 }
 
-function isPendingTaskShape(value: unknown): value is PendingTask {
+export function isPendingTaskShape(value: unknown): value is PendingTask {
   if (!value || typeof value !== "object") return false
   const t = value as Record<string, unknown>
   return (

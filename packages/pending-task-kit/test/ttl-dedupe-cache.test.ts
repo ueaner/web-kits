@@ -22,4 +22,15 @@ describe("createTtlDedupeCache", () => {
     expect(cache.claim("__proto__")).toBe(true)
     expect(cache.claim("toString")).toBe(true)
   })
+
+  it("clear() wipes every claim, letting a previously-claimed id be claimed again", () => {
+    const cache = createTtlDedupeCache("dedupe-clear", 60_000)
+
+    expect(cache.claim("a")).toBe(true)
+    expect(cache.claim("a")).toBe(false)
+
+    cache.clear()
+
+    expect(cache.claim("a")).toBe(true)
+  })
 })

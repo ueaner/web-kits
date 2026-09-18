@@ -1,20 +1,26 @@
+import { safeGetItem, safeRemoveItem, safeSetItem } from "./safe-storage"
+
 interface TtlDedupeEntry {
   claimedAt: number
 }
 
 type TtlDedupeState = Record<string, TtlDedupeEntry>
 
+export interface TtlDedupeCache {
+  claim(id: string): boolean
+  clear(): void
+}
+
 /**
  * A localStorage-backed, TTL-expiring "claim once" cache — e.g. to make sure a
  * cross-tab notification or tracking event fires exactly once even if several
  * tabs race to process the same id.
  */
-export function createTtlDedupeCache(storageKey: string, ttlMs: number) {
+export function createTtlDedupeCache(storageKey: string, ttlMs: number): TtlDedupeCache {
   const read = (): TtlDedupeState => {
-    if (typeof localStorage === "undefined") return {}
+    const raw = safeGetItem(storageKey)
+    if (!raw) return {}
     try {
-      const raw = localStorage.getItem(storageKey)
-      if (!raw) return {}
       const parsed = JSON.parse(raw) as unknown
       return parsed && typeof parsed === "object" ? (parsed as TtlDedupeState) : {}
     } catch {
@@ -23,17 +29,13 @@ export function createTtlDedupeCache(storageKey: string, ttlMs: number) {
   }
 
   const write = (state: Map<string, TtlDedupeEntry>) => {
-    if (typeof localStorage === "undefined") return
-    try {
-      // `Object.fromEntries` creates each property via a real data-property definition rather
-      // than a `[[Set]]`/bracket assignment, so an id like "__proto__" round-trips as ordinary
-      // stored data instead of silently reassigning the object's prototype (bracket assignment,
-      // e.g. `obj[id] = ...`, would do exactly that for that one specific key and the "claim"
-      // would vanish on write instead of persisting).
-      localStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(state)))
-    } catch {
-      // Storage full/unavailable — dedupe just degrades to "not guaranteed", which is safe here.
-    }
+    // `Object.fromEntries` creates each property via a real data-property definition rather
+    // than a `[[Set]]`/bracket assignment, so an id like "__proto__" round-trips as ordinary
+    // stored data instead of silently reassigning the object's prototype (bracket assignment,
+    // e.g. `obj[id] = ...`, would do exactly that for that one specific key and the "claim"
+    // would vanish on write instead of persisting).
+    // Storage full/unavailable — dedupe just degrades to "not guaranteed", which is safe here.
+    safeSetItem(storageKey, JSON.stringify(Object.fromEntries(state)))
   }
 
   const prune = (state: TtlDedupeState, now: number): Map<string, TtlDedupeEntry> => {
@@ -64,6 +66,20 @@ export function createTtlDedupeCache(storageKey: string, ttlMs: number) {
       state.set(id, { claimedAt: now })
       write(state)
       return true
+    },
+    /** Wipes every claim this cache holds — e.g. on explicit user logout, if `id`s (or
+     *  whatever metadata a caller's own claim wrapper attaches alongside them) can carry PII.
+     *  Unlike `claim`, this doesn't need TTL pruning first: it removes the whole entry
+     *  regardless of age.
+     *
+     *  Best-effort, not atomic with a concurrent `claim()` in another tab: like every other
+     *  primitive in this package, this is a plain, unlocked read-modify-write (`claim` reads,
+     *  then this removes), so a `claim()` in another tab that read its state just before this
+     *  call's removal lands can write that stale state back afterwards, resurrecting the very
+     *  claim this call meant to wipe. Compose your own `withTabLock` around both calls if a
+     *  logout-time clear must be atomic with respect to a claim that could race it. */
+    clear(): void {
+      safeRemoveItem(storageKey)
     },
   }
 }

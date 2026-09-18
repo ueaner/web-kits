@@ -32,13 +32,19 @@ export function usePendingTaskPoller<TType extends string = string>(
     // Every callback reads through `optionsRef` at call time, not at poller-construction
     // time, so a new `onResult`/`onCheckError`/etc. closure from a re-render takes effect
     // immediately without needing to tear down and rebuild the poller (only `store`/`registry`
-    // identity and `enabled` do that, since those genuinely need a fresh instance).
+    // identity and `enabled` do that, since those genuinely need a fresh instance). This must
+    // cover every callback option `PendingTaskPollerOptions` adds, not just the ones that
+    // existed when this hook was first written — a callback left out of this list (only
+    // reachable via the initial `...optionsRef.current` spread) would silently pin itself to
+    // whatever closure was captured at mount, which defeats the whole point for anything that
+    // reads live app state (e.g. `acceptRelayedResult` checking the currently signed-in user).
     const poller = new PendingTaskPoller({
       ...optionsRef.current,
       onResult: (detail) => optionsRef.current.onResult?.(detail),
       onCheckError: (error, task) => optionsRef.current.onCheckError?.(error, task),
       claimResultOnce: (task) =>
         optionsRef.current.claimResultOnce ? optionsRef.current.claimResultOnce(task) : true,
+      acceptRelayedResult: (detail) => optionsRef.current.acceptRelayedResult?.(detail) ?? true,
     })
     poller.start()
 

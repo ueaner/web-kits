@@ -120,10 +120,67 @@ function PendingTaskNotifier() {
 
 在应用根部挂载一次 `<PendingTaskNotifier />` 即可。
 
+## 跨标签页轮询选主(默认开启)
+
+多个标签页共享同一个 store 时(它们本来就是共享的——任务本身已经通过 `storage` 事件
+跨标签页同步),同一时刻只会有一个标签页真正调用 `handler.check()`;其它标签页对这个
+task 完全不发起任何网络请求。这就是 `crossTabPollLeaderElection`,默认开启。单标签页场景
+下开着它也没有副作用——没有别的标签页竞争时,一个 poller 永远能成功认领/续租自己的
+租约,行为不受影响。
+
+选主用的是可续租、带 TTL 的声明(`pollLeaseTtlMs`,默认 `pollTickMs * 4`),不是一直持有
+的锁——停止续租的 leader(被关闭、崩溃,或者被浏览器冻结进前进后退缓存)不会永久卡住
+其它标签页,租约会自然过期,任意还开着的标签页在下一次 tick 就能接管。`stop()` 也会
+尽力(best-effort)在持有租约时立刻发起释放——这是 fire-and-forget 的,因为 `stop()`
+本身是同步 API,页面正好在这时被卸载的话仍可能来不及真正写完——优雅关闭的场景下,
+通常其它标签页不需要等满整个 TTL。
+
+因为只有 leader 会检测到任务完成,它的结果会通过第二个 localStorage key
+(`resultRelayKey`,默认 `` `${storageKey}-result-relay` ``)广播给其它每个标签页:每个
+标签页会用广播过来的数据触发自己的 `onResult`,以及(如果那个标签页也开着
+`dispatchDomEvent`)自己的 `CustomEvent`,效果跟那个标签页自己检测到完成一样。如果你
+组合使用了 `claimResultOnce`(见下一节),其它标签页收到广播后的派发也会经过和 leader
+本地派发相同的这道门——两者一起用,就能同时得到"只有 leader 轮询"和"最多一个标签页
+最终发出通知"这两个效果,且不受哪个标签页先检测到结果的影响。
+
+同一个标签页、同一个 store 下应该只存在一个 `PendingTaskPoller` 实例——`storage` 事件
+永远不会在发起写入的那个标签页自己身上触发,所以同一个标签页里如果有第二个 poller 实例
+共享同一个 store,它将完全收不到这份广播(也收不到上面提到的任务列表同步)。
+
+如果一条广播过来的结果,到达这个标签页时可能已经"过期"(比如中途换了个账号登录、或者
+已经登出了),继续在这个标签页里重新 dispatch 出去就不对了,可以用 `acceptRelayedResult`
+给接收端加一道判断:
+
+```ts
+const poller = new PendingTaskPoller({
+  store,
+  registry,
+  acceptRelayedResult: (detail) => detail.task.metadata?.userId === myAuthStore.getState().userId,
+})
+```
+
+只有在你确实需要让每个标签页各自轮询全部任务时,才整体关掉跨标签页选主:
+
+```ts
+const poller = new PendingTaskPoller({
+  store,
+  registry,
+  crossTabPollLeaderElection: false,
+})
+```
+
 ## 跨标签页去重提示(可选)
 
-如果多个标签页可能同时处理同一个任务的完成事件(比如强制重新登录导致的竞态),可以
-通过 `claimResultOnce` 组合内置的两个原语:
+上面的 `crossTabPollLeaderElection` 解决的是"轮询本身不要重复";有了 fencing 校验之后,
+一次很慢的 `check()` 也不会再让 leadership 转手后的另一个标签页也走到同一个任务的
+`finalize()`。但这不代表 `onResult` 在全局范围内保证只触发一次——还残留几个更窄的窗口:
+你自己的 `claimResultOnce` 回调如果本身很慢,它 await 的过程中 leadership 仍可能转手到
+另一个标签页,那个标签页独立完成同一个任务后,会调用它自己的 `claimResultOnce`;在没有
+Web Locks API 的浏览器里,`withTabLock` 会退化为完全不加锁;租约写入偶尔静默失败(比如
+配额超限、Safari 隐私模式)时,也可能让两个标签页都以为自己是 leader。如果多个标签页
+可能同时处理同一个任务的完成事件(以上任意一种竞态,或者强制重新登录导致的竞态),可以
+通过 `claimResultOnce` 组合内置的两个原语——它也会覆盖到其它标签页收到广播后的那次派发
+(见上文),所以即使开着选主,也能拿到真正的全局保证:
 
 ```ts
 import { withTabLock, createTtlDedupeCache } from "pending-task-kit"
@@ -135,6 +192,10 @@ const poller = new PendingTaskPoller({
   claimResultOnce: (task) => withTabLock(`pending-task:${task.id}`, () => notified.claim(task.id)),
 })
 ```
+
+如果 `claimResultOnce` 判断依据的内容(或者它跟踪的任务的 `metadata`/`data` 字段)可能
+带 PII,在用户主动登出时也调用一下 `notified.clear()`,跟下面"任务归属范围"一节里
+调用 store 的 `clearAllTasks()` 是同一个道理。
 
 ## 任务归属范围(比如按用户/租户区分)
 
@@ -150,6 +211,18 @@ store.getState().pruneTasksBy((task) => task.metadata?.userId === currentUserId)
 调用 `pruneTasksBy`,在用户主动登出时自行调用 `clearAllTasks()`。在*被动*登出(比如收到
 401)时不调用 `clearAllTasks()`,可以让正在进行中的任务(比如一次待确认的支付)在快速
 重新登录后依然存活——这是一个需要你主动做出的选择,而不是这个包默认内置的行为。
+
+如果任务的 `metadata` 或 handler 返回的 `PendingTaskCheckResult.data` 可能带 PII,记得
+开启 `crossTabPollLeaderElection` 后,这些内容也会短暂地留在 `resultRelayKey` 这个
+localStorage 条目里(见上面"跨标签页轮询选主"一节)——下一次结果会覆盖它,但没有任何
+东西会主动清理它。在用户主动登出时清掉它,跟调用 store 的 `clearAllTasks()`、去重缓存的
+`clear()` 是同一个道理:
+
+```ts
+import { clearResultRelay } from "pending-task-kit"
+
+clearResultRelay(resultRelayKey) // 用你传入的那个 key,没传的话就是 `${storageKey}-result-relay`
+```
 
 ## 刻意排除在范围之外的东西
 
