@@ -53,7 +53,11 @@ export function parseResultRelay<TType extends string = string>(value: string | 
     if (!isPendingTaskShape(parsed.task) || !isResultStatus(parsed.status)) {
       return null
     }
-    return parsed as PendingTaskResultEventDetail<TType>
+    // Normalize `silent` rather than trusting the payload: a relay written by an older version
+    // of this package (e.g. another tab still on it mid-deploy) predates the field, and
+    // `detail.silent` is typed as a non-optional `boolean` — passing `undefined` through would
+    // quietly break that contract for the receiving tab's `onResult`.
+    return { ...parsed, silent: parsed.silent === true } as PendingTaskResultEventDetail<TType>
   } catch {
     return null
   }

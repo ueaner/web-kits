@@ -33,10 +33,12 @@ pnpm add pending-task-kit zustand
   超过 `taskListWarnThreshold`(默认 200)时会 `console.warn` 一次——整份列表是单个 JSON
   blob,每次变化都要整个重写,数量太大会有撞上 ~5MB 单 origin 配额的风险。
 - **Poller**(`PendingTaskPoller`)—— 引擎本体:按间隔扫描任务,调用对应的 handler,并将
-  每个任务归结为 `success`/`failure`(通过 `onResult` 派发)、`error`(当 `check()` 本身
-  持续抛错直到达到 `maxFailureCount` 时派发,除非设置了 `silentOnFailure`),或者在 TTL
-  先耗尽时静默归结为 `expired`——`error`/`expired` 都是引擎自己的判断,handler 本身永远
-  不会返回这两种状态。
+  每个任务归结为 `success`/`failure`,或者 `error`(`check()` 本身持续抛错直到达到
+  `maxFailureCount`)——这三种情况**都会**通过 `onResult` 派发,`silentOnSuccess`/
+  `silentOnFailure` 只会体现在派发的 `detail.silent` 字段上,由 `onResult` 自己决定要不要
+  据此跳过某些反应(引擎本身从不替你决定要不要调用 `onResult`,见 `onResult` 自己的文档
+  注释);或者在 TTL 先耗尽时静默归结为 `expired`,这种情况完全不会走到 `onResult`。
+  `error`/`expired` 都是引擎自己的判断,handler 本身永远不会返回这两种状态。
 
 ## 用法(核心,不涉及 React)
 
@@ -83,6 +85,9 @@ const poller = new PendingTaskPoller({
   store,
   registry,
   onResult: (detail) => {
+    // 被 silentOnSuccess/silentOnFailure 标记的结果同样会调用到这里——detail.silent
+    // 就是标记。全部跳过是一种选择,只跳过 toast 也是一种。
+    if (detail.silent) return
     const data = detail.data as { href?: string; message?: string } | undefined
     if (detail.status === "success") showToast(data?.message ?? "Done", { href: data?.href })
     if (detail.status === "failure") showToast(data?.message ?? "Failed", { variant: "error" })

@@ -34,7 +34,15 @@ const activePollerByStore = new WeakMap<object, { isStopped: () => boolean }>()
 export interface PendingTaskPollerOptions<TType extends string = string> {
   store: PendingTaskStore<TType>
   registry: PendingTaskRegistry<TType>
-  /** Called for every non-silent `success`/`failure`/`error` outcome. This is where apps show a toast, navigate, or invalidate a cache — the engine has no opinion on any of that. */
+  /**
+   * Called for every `success`/`failure`/`error` outcome — including ones a handler marked
+   * `silentOnSuccess`/`silentOnFailure`. This is where apps show a toast, navigate, or
+   * invalidate a cache — the engine has no opinion on any of that, so it never withholds a
+   * call here on your behalf; check `detail.silent` yourself if some of those reactions
+   * (a toast) should be skipped while others (a cache invalidation, a view switch) still run.
+   * See `PendingTaskHandler.silentOnSuccess`'s doc comment for why the engine stopped gating
+   * this call itself.
+   */
   onResult?: (detail: PendingTaskResultEventDetail<TType>) => void
   /**
    * Called whenever `handler.check` throws, before the normal failure-count/backoff/expiry
@@ -182,10 +190,11 @@ function describeError(error: unknown): string {
 /**
  * Framework-agnostic polling engine: scans the store's tasks on an interval, calls the
  * matching handler's `check()`, and resolves each task to `pending` (re-check later),
- * `success`/`failure` (dispatched via `onResult`, then removed), silently-or-not `error`
- * (removed; dispatched unless `silentOnFailure`) when `check()` itself kept failing, or
- * silently expired (removed, never dispatched — unless the handler opts into
- * `finalCheckOnExpiry` for one last check).
+ * `success`/`failure` (removed, then dispatched via `onResult` with `detail.silent` set from
+ * `silentOnSuccess`/`silentOnFailure`), `error` (same, `silent` from `silentOnFailure`) when
+ * `check()` itself kept failing, or silently expired (removed, never dispatched at all — not
+ * even a silent `onResult` call — unless the handler opts into `finalCheckOnExpiry` for one
+ * last check).
  *
  * When multiple tabs share a store, `crossTabPollLeaderElection` (on by default) ensures only
  * one of them actually polls at a time — see that option and `resultRelayKey` for how the
@@ -538,7 +547,7 @@ export class PendingTaskPoller<TType extends string = string> {
 
   private async finalize(
     task: PendingTask<TType>,
-    detail: Omit<PendingTaskResultEventDetail<TType>, "task">,
+    detail: Omit<PendingTaskResultEventDetail<TType>, "task" | "silent">,
     handler: PendingTaskHandler<TType> | undefined,
     batch: Map<string, Partial<PendingTask<TType>> | null>,
   ): Promise<void> {
@@ -547,8 +556,14 @@ export class PendingTaskPoller<TType extends string = string> {
 
     if (detail.status === "expired") return
 
-    const silent = detail.status === "success" ? handler?.silentOnSuccess : handler?.silentOnFailure
-    if (silent) return
+    // `silent` used to gate this entire method (claimResultOnce/onResult/relay/DOM event) —
+    // it no longer does. This package has no notion of what a "notification" even is (see
+    // README's own "notification channel deliberately not part of this package"), so an
+    // engine-level decision to withhold onResult entirely was the engine quietly assuming
+    // onResult always means "show a toast" — untrue for callers that also use it to switch a
+    // view or invalidate a cache on a "silent" success. `silent` is now purely informational,
+    // carried on `detail` for `onResult` to act on itself.
+    const silent = (detail.status === "success" ? handler?.silentOnSuccess : handler?.silentOnFailure) ?? false
 
     let claimed: boolean
     try {
@@ -563,7 +578,7 @@ export class PendingTaskPoller<TType extends string = string> {
     }
     if (!claimed) return
 
-    const fullDetail: PendingTaskResultEventDetail<TType> = { task, ...detail }
+    const fullDetail: PendingTaskResultEventDetail<TType> = { task, silent, ...detail }
     if (this.options.crossTabPollLeaderElection) {
       // Written before onResult/dispatchDomEvent below, deliberately: this relay data is
       // independent of either local callback, and both onResult and a dispatchEvent listener

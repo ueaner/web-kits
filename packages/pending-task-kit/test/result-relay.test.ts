@@ -10,14 +10,19 @@ describe("writeResultRelay / parseResultRelay", () => {
   const task: PendingTask = { id: "a", type: "demo", taskId: 1, startedAt: Date.now() }
 
   it("round-trips a written detail through localStorage", () => {
-    const detail: PendingTaskResultEventDetail = { task, status: "success", data: { message: "done" } }
+    const detail: PendingTaskResultEventDetail = {
+      task,
+      status: "success",
+      silent: false,
+      data: { message: "done" },
+    }
     writeResultRelay("relay-key", detail)
     expect(parseResultRelay(localStorage.getItem("relay-key"))).toEqual(detail)
   })
 
   it("round-trips every result status", () => {
     for (const status of ["success", "failure", "error", "expired"] as const) {
-      const detail: PendingTaskResultEventDetail = { task, status }
+      const detail: PendingTaskResultEventDetail = { task, status, silent: false }
       writeResultRelay("relay-key", detail)
       expect(parseResultRelay(localStorage.getItem("relay-key"))?.status).toBe(status)
     }
@@ -41,16 +46,21 @@ describe("writeResultRelay / parseResultRelay", () => {
     expect(parseResultRelay(value)).toBeNull()
   })
 
+  it("defaults a missing `silent` to false — a relay written by an older version predates the field", () => {
+    const value = JSON.stringify({ task, status: "success" })
+    expect(parseResultRelay(value)?.silent).toBe(false)
+  })
+
   it("only holds the most recent write, not a queue", () => {
-    writeResultRelay("relay-key", { task, status: "success" })
-    writeResultRelay("relay-key", { task, status: "failure" })
+    writeResultRelay("relay-key", { task, status: "success", silent: false })
+    writeResultRelay("relay-key", { task, status: "failure", silent: false })
     expect(parseResultRelay(localStorage.getItem("relay-key"))?.status).toBe("failure")
   })
 
   it("does not throw when data contains a value JSON.stringify can't serialize", () => {
     const circular: Record<string, unknown> = {}
     circular.self = circular
-    const detail: PendingTaskResultEventDetail = { task, status: "success", data: circular }
+    const detail: PendingTaskResultEventDetail = { task, status: "success", silent: false, data: circular }
 
     expect(() => writeResultRelay("relay-key", detail)).not.toThrow()
     // Degrades the same way a failed localStorage write does: this one relay is skipped.
@@ -66,7 +76,7 @@ describe("clearResultRelay", () => {
   const task: PendingTask = { id: "a", type: "demo", taskId: 1, startedAt: Date.now() }
 
   it("removes whatever result is currently stored", () => {
-    writeResultRelay("relay-key", { task, status: "success" })
+    writeResultRelay("relay-key", { task, status: "success", silent: false })
     expect(localStorage.getItem("relay-key")).not.toBeNull()
 
     clearResultRelay("relay-key")
