@@ -1,6 +1,6 @@
 {
   "name": "pending-task-kit",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Framework-agnostic background task polling/notification engine, with an optional React binding.",
   "keywords": [
     "background-task",

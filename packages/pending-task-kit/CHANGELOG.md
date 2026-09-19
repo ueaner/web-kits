@@ -1,5 +1,23 @@
 # pending-task-kit
 
+## 0.3.0
+
+### Minor Changes
+
+- 7d526f3: Add a `PendingTaskLogger` diagnostic-warning channel (`{ warn(message) }`, defaulting to
+  `console`) to `createPendingTaskStore`, `createPollLeaseClaimer`, and `PendingTaskPoller`, so
+  the package's warnings can be routed into an app's own telemetry/logging. Two new runtime
+  warnings use it: a task whose `type` matches no registry entry now warns once per type per
+  poller (previously it sat silently until its TTL expired), and `start()`-ing a second poller
+  on the same store in the same tab (which can never receive storage/relay events) now warns
+  instead of failing silently. The store's persisted state is also now versioned
+  (`version: 1` with a pass-through `migrate`) so future shape changes can migrate old data
+  instead of zustand discarding it — pre-versioning entries hydrate unchanged.
+
+### Patch Changes
+
+- ffe69a5: Declare `engines: { node: ">=24" }` in package.json. Consumers installing the package on Node < 24 will now see an EBADENGINE warning; supported runtimes are unaffected.
+
 ## 0.2.0
 
 ### Breaking Changes
