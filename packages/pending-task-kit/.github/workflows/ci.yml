@@ -19,7 +19,7 @@ jobs:
           # needs to diff against the PR's base branch.
           fetch-depth: 0
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -30,7 +30,8 @@ jobs:
       - run: pnpm run lint
       - run: pnpm run test
       - name: Require a changeset for changes that should ship in a release
-        if: github.event_name == 'pull_request'
+        # Dependabot PRs bump devDeps without a changeset by design — exempt the bot.
+        if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
         run: pnpm exec changeset status --since=origin/${{ github.base_ref }}
 
   e2e:
@@ -39,14 +40,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
       - name: Cache Playwright browsers
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         id: playwright-cache
         with:
           path: ~/.cache/ms-playwright
@@ -59,7 +60,7 @@ jobs:
         if: steps.playwright-cache.outputs.cache-hit == 'true'
       - run: pnpm run test:e2e
       - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report

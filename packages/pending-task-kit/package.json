@@ -23,6 +23,9 @@
   "type": "module",
   "sideEffects": false,
   "packageManager": "pnpm@11.5.2",
+  "engines": {
+    "node": ">=24"
+  },
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",

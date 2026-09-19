@@ -371,6 +371,9 @@ they're documented somewhere instead of only in source comments:
 
 ## Contributing
 
+Development requires Node 24+ (see `engines` in `package.json`; the library itself is a
+browser runtime with no Node dependency — this is purely about the toolchain).
+
 `pnpm typecheck && pnpm lint && pnpm test && pnpm build` should all pass; `pnpm test:e2e` runs
 a small real-Chromium Playwright suite (`test-e2e/`) that specifically exercises cross-tab
 `navigator.locks` arbitration and genuine `storage` events — the one thing the jsdom-based
