@@ -233,7 +233,8 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
   }
 
   async function doInitialize(config: DbAdapterConfig): Promise<DbClient> {
-    const isOpfsSupported = typeof navigator !== "undefined" && typeof navigator.storage !== "undefined" && !!navigator.storage.getDirectory;
+    const isOpfsSupported =
+      typeof navigator !== "undefined" && typeof navigator.storage !== "undefined" && !!navigator.storage.getDirectory;
     const isCrossOriginIsolated = typeof window !== "undefined" && window.crossOriginIsolated;
 
     let filename: string = ":memory:";
@@ -254,7 +255,9 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
         filename = `file:${config.name}.db?vfs=opfs`;
       } catch (opfsError) {
         if (!fallbackToMemory) {
-          throw new DbInitializationError(new Error("[Web DB] OPFS initialization failed and fallbackToMemory is false.", { cause: opfsError }));
+          throw new DbInitializationError(
+            new Error("[Web DB] OPFS initialization failed and fallbackToMemory is false.", { cause: opfsError }),
+          );
         }
         logger.warn("[Web DB] OPFS initialization failed or file access denied. Falling back to in-memory mode.", opfsError);
         filename = ":memory:";
@@ -292,7 +295,12 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
         rejectTimeout = reject;
       });
       const timeoutId = setTimeout(
-        () => rejectTimeout(new Error(`[Web DB] Timed out after ${timeoutMs}ms waiting for the SQLite worker to become ready (it may have failed to load).`)),
+        () =>
+          rejectTimeout(
+            new Error(
+              `[Web DB] Timed out after ${timeoutMs}ms waiting for the SQLite worker to become ready (it may have failed to load).`,
+            ),
+          ),
         timeoutMs,
       );
       try {
@@ -369,7 +377,6 @@ const runTransactionalMigration: MigrationExecutor = async (db, migration, recor
 // createDbClient 靠这个标记判断"这个 executor 需要单连接"，而不是靠函数引用是否等于
 // defaultExecutor——后者只能拦住"自定义了非默认 executor"，拦不住"自定义了一个完全不涉及
 // 事务的 executor（比如只加日志）"这种本来就安全、不该被拒绝的情况。
-export const transactionalExecutor: MigrationExecutor = Object.assign(
-  runTransactionalMigration,
-  { requiresSingleConnection: true as const },
-);
+export const transactionalExecutor: MigrationExecutor = Object.assign(runTransactionalMigration, {
+  requiresSingleConnection: true as const,
+});

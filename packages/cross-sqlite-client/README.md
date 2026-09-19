@@ -24,7 +24,7 @@ pnpm add cross-sqlite-client
 of this package, so installing `cross-sqlite-client` pulls both in automatically
 — you don't need to `pnpm add` either one yourself in your app's own
 `package.json`. "optional" here means a failed install of one won't block the
-rest, not "skipped unless requested." Your app only needs to *use* the one
+rest, not "skipped unless requested." Your app only needs to _use_ the one
 matching its target platform; remove the other with `--no-optional` (or your
 package manager's equivalent) if you don't want it in `node_modules` at all.
 `react` is an optional peer dependency, needed only if you use the `./react`
@@ -99,16 +99,16 @@ function TodoList() {
 
 ### Core (`cross-sqlite-client`)
 
-| Export | What it is |
-|---|---|
-| `createDbClient(options)` | Resolves the adapter, initializes it, applies `pragmas`, runs pending migrations, returns `Promise<DbClient>`. If PRAGMA/migration setup fails, the already-opened connection is closed before the error propagates. |
-| `runMigrations(db, migrations, options?)` | The migration runner `createDbClient` uses internally — call it directly if you're not going through `createDbClient`. |
-| `defaultExecutor` | The migration executor used when `migrationOptions.executor` isn't set — runs all of a migration's statements via `executeBatch()`, with no transaction. |
-| `DbClient` (type) | `{ select<T>(sql, params?), execute(sql, params?), executeBatch(statements), close() }` — see below. |
-| `DbAdapter` / `DbAdapterConfig` (types) | The interface each `createXAdapter()` factory returns / the `{ name }` config passed to `initialize()`. |
-| `BatchStatement` / `Logger` (types) | `string \| { sql, params? }` for `executeBatch()` / the diagnostics channel (`{ warn, error }`, defaults to `console`). |
-| `Migration` / `MigrationExecutor` / `MigrationOptions` (types) | See [Writing migrations](#writing-migrations). |
-| `DbError` and subclasses | See [Errors](#errors). |
+| Export                                                         | What it is                                                                                                                                                                                                           |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createDbClient(options)`                                      | Resolves the adapter, initializes it, applies `pragmas`, runs pending migrations, returns `Promise<DbClient>`. If PRAGMA/migration setup fails, the already-opened connection is closed before the error propagates. |
+| `runMigrations(db, migrations, options?)`                      | The migration runner `createDbClient` uses internally — call it directly if you're not going through `createDbClient`.                                                                                               |
+| `defaultExecutor`                                              | The migration executor used when `migrationOptions.executor` isn't set — runs all of a migration's statements via `executeBatch()`, with no transaction.                                                             |
+| `DbClient` (type)                                              | `{ select<T>(sql, params?), execute(sql, params?), executeBatch(statements), close() }` — see below.                                                                                                                 |
+| `DbAdapter` / `DbAdapterConfig` (types)                        | The interface each `createXAdapter()` factory returns / the `{ name }` config passed to `initialize()`.                                                                                                              |
+| `BatchStatement` / `Logger` (types)                            | `string \| { sql, params? }` for `executeBatch()` / the diagnostics channel (`{ warn, error }`, defaults to `console`).                                                                                              |
+| `Migration` / `MigrationExecutor` / `MigrationOptions` (types) | See [Writing migrations](#writing-migrations).                                                                                                                                                                       |
+| `DbError` and subclasses                                       | See [Errors](#errors).                                                                                                                                                                                               |
 
 ```ts
 import { createDbClient, runMigrations, defaultExecutor } from "cross-sqlite-client";
@@ -129,7 +129,7 @@ interface DbClient {
 transaction guarantee** — when every statement is parameterless, the web and
 memory adapters join them into a single SQL string and send it to the
 underlying engine in one call (the web adapter saves one Worker round-trip per
-statement); if *any* statement carries bound params, the whole batch falls
+statement); if _any_ statement carries bound params, the whole batch falls
 back to running one by one. The library deliberately does not
 offer a business-facing transaction API: pooled-connection adapters (Tauri)
 can't guarantee `BEGIN`/`COMMIT` land on the same physical connection, so
@@ -161,11 +161,11 @@ Each `createXAdapter()` call returns a fresh, independent `DbAdapter` instance
 (no shared module-level state), so you can safely create more than one in the
 same process — e.g. in tests.
 
-| Subpath | Factory | Backing driver | `singleConnection` |
-|---|---|---|---|
-| `cross-sqlite-client/adapters/web` | `createWebAdapter(options?)` | `@sqlite.org/sqlite-wasm` (Worker) | `true` |
-| `cross-sqlite-client/adapters/tauri` | `createTauriAdapter()` | `@tauri-apps/plugin-sql` | `false` |
-| `cross-sqlite-client/adapters/memory` | `createMemoryAdapter()` | `@sqlite.org/sqlite-wasm` (Node/main-thread, in-memory) | `true` |
+| Subpath                               | Factory                      | Backing driver                                          | `singleConnection` |
+| ------------------------------------- | ---------------------------- | ------------------------------------------------------- | ------------------ |
+| `cross-sqlite-client/adapters/web`    | `createWebAdapter(options?)` | `@sqlite.org/sqlite-wasm` (Worker)                      | `true`             |
+| `cross-sqlite-client/adapters/tauri`  | `createTauriAdapter()`       | `@tauri-apps/plugin-sql`                                | `false`            |
+| `cross-sqlite-client/adapters/memory` | `createMemoryAdapter()`      | `@sqlite.org/sqlite-wasm` (Node/main-thread, in-memory) | `true`             |
 
 `singleConnection` says whether every `execute()`/`select()` call on that
 adapter is guaranteed to land on the same physical connection — see
@@ -174,27 +174,27 @@ for why that matters.
 
 **`createWebAdapter(options?)`:**
 
-| Option | Default | Meaning |
-|---|---|---|
-| `timeoutMs` | `15000` | How long to wait for the SQLite worker to become ready before `initialize()` rejects. Without this, a failed worker-script load would leave `initialize()` pending forever. |
-| `fallbackToMemory` | `true` | Whether to silently use `:memory:` when OPFS isn't available — including when the OPFS probe passes but opening the file fails — instead of throwing. See [COOP/COEP](#coopcoep-required-for-opfs-persistence). |
-| `singleTabLock` | `true` | Whether to coordinate access to the same OPFS file across browser tabs. See [Multi-tab coordination](#multi-tab-coordination). |
-| `logger` | `console` | Where diagnostics go (OPFS-fallback warnings, worker errors). Pass your own `{ warn, error }` to route them into your logging/telemetry. |
+| Option             | Default   | Meaning                                                                                                                                                                                                         |
+| ------------------ | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `timeoutMs`        | `15000`   | How long to wait for the SQLite worker to become ready before `initialize()` rejects. Without this, a failed worker-script load would leave `initialize()` pending forever.                                     |
+| `fallbackToMemory` | `true`    | Whether to silently use `:memory:` when OPFS isn't available — including when the OPFS probe passes but opening the file fails — instead of throwing. See [COOP/COEP](#coopcoep-required-for-opfs-persistence). |
+| `singleTabLock`    | `true`    | Whether to coordinate access to the same OPFS file across browser tabs. See [Multi-tab coordination](#multi-tab-coordination).                                                                                  |
+| `logger`           | `console` | Where diagnostics go (OPFS-fallback warnings, worker errors). Pass your own `{ warn, error }` to route them into your logging/telemetry.                                                                        |
 
 **`createTauriAdapter()`** and **`createMemoryAdapter()`** take no options.
 `createMemoryAdapter()` is meant for tests — see [Testing](#testing).
 
 ### React (`cross-sqlite-client/react`)
 
-| Export | What it is |
-|---|---|
+| Export                            | What it is                                                                                                                                                                                                                                                                                                     |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `<DatabaseProvider client={...}>` | Takes a `DbClient` or `Promise<DbClient>` (typically `createDbClient()`'s return value) and resolves it, exposing the result via context. It does **not** decide which adapter/migrations to use — that's your app's job (see Quick start) — and it does **not** call `client.close()` on unmount (see below). |
-| `useDatabase()` | Reads the context: `{ dbClient, isDbReady, isLoading, dbError }`. Throws if called outside a `DatabaseProvider`. |
+| `useDatabase()`                   | Reads the context: `{ dbClient, isDbReady, isLoading, dbError }`. Throws if called outside a `DatabaseProvider`.                                                                                                                                                                                               |
 
 Two things worth knowing about `DatabaseProvider`:
 
 - **No `retry`.** The `client` prop only ever settles once — retrying means
-  passing it a *new* promise, which re-triggers initialization because the
+  passing it a _new_ promise, which re-triggers initialization because the
   prop reference changed. The moment the prop changes, the context drops back
   to fully-not-ready (`dbClient: null`, `isDbReady: false`) until the new
   promise resolves — consumers never see the old connection during the window:
@@ -238,7 +238,7 @@ interface Migration {
   have to start at 1 or be consecutive — gaps are fine.)
 - **Every statement must be safe to re-run.** There is no cross-platform
   transaction guarantee (see below), so if a migration fails partway, the next
-  startup re-runs the *entire* version from scratch. Stick to
+  startup re-runs the _entire_ version from scratch. Stick to
   `CREATE TABLE/INDEX IF NOT EXISTS` for new schema. For a future
   non-idempotent change (e.g. renaming a column), check the current schema
   state first — e.g. `SELECT 1 FROM pragma_table_info('t') WHERE name = '...'`
@@ -252,7 +252,7 @@ interface Migration {
   the database already applied `[1, 2, 5]` and a new app build ships the
   missing `3`/`4`, those versions are below `MAX(version)` and would normally
   be skipped forever; the runner logs a `logger.warn` naming them instead.
-  They are *not* auto-applied — out-of-order application can break schema
+  They are _not_ auto-applied — out-of-order application can break schema
   evolution assumptions — so apply such hotfixes deliberately.
 
 `runMigrations(db, migrations, options?)` (and `createDbClient`'s
@@ -260,9 +260,9 @@ interface Migration {
 
 ```ts
 interface MigrationOptions {
-  tableName?: string;    // version table name, default "schema_version"; identifiers only
+  tableName?: string; // version table name, default "schema_version"; identifiers only
   executor?: MigrationExecutor; // see the next section
-  logger?: Logger;       // overrides createDbClient's logger for migration diagnostics
+  logger?: Logger; // overrides createDbClient's logger for migration diagnostics
 }
 ```
 
@@ -313,7 +313,7 @@ an in-memory database (`fallbackToMemory: true` by default), so data won't
 survive a page reload. Pass `fallbackToMemory: false` if you'd rather fail
 loudly than run in-memory unexpectedly.
 
-Note this is a *deployment* constraint, not a browser-version one: even on a
+Note this is a _deployment_ constraint, not a browser-version one: even on a
 fully modern browser, you can lose cross-origin isolation by being embedded in
 someone else's iframe, being hosted on a platform that won't let you set
 custom headers, or a team deliberately not enabling `COEP: require-corp`
@@ -328,7 +328,7 @@ sqlite-wasm's `opfs` VFS has its own locking protocol, so two tabs writing to
 the same OPFS-backed file won't corrupt data and generally won't hang — the
 losing tab just gets a catchable "database is locked" SQL error. But that
 error only surfaces the moment some query happens to hit contention, with
-nothing telling you *why* it failed.
+nothing telling you _why_ it failed.
 
 By default (`singleTabLock: true`), `createWebAdapter()` uses the
 [Web Locks API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Locks_API)
@@ -349,14 +349,14 @@ best-effort cross-tab coordination for something other than the database.
 Every adapter throws one of these (all extend `DbError extends Error`, and all
 accept an optional `cause`):
 
-| Class | Thrown when |
-|---|---|
-| `DbError` | Generic/usage errors, e.g. calling `select()`/`execute()` before `initialize()` resolves, or after `close()`. |
-| `DbInitializationError` | `adapter.initialize()` failed (worker/OPFS/Tauri-load failure, etc.). |
-| `DbExecutionError` (has `.sql` and `.params`) | A `select()`/`execute()`/`executeBatch()` call failed. |
-| `DbMigrationError` (has `.version`) | A migration failed; wraps the underlying error as `cause`. Thrown by `runMigrations`/`createDbClient`. |
-| `DbCloseError` | `client.close()` failed. |
-| `DbTabLockError` | (Web adapter only, `singleTabLock: true`) Another tab already holds the database. |
+| Class                                         | Thrown when                                                                                                   |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `DbError`                                     | Generic/usage errors, e.g. calling `select()`/`execute()` before `initialize()` resolves, or after `close()`. |
+| `DbInitializationError`                       | `adapter.initialize()` failed (worker/OPFS/Tauri-load failure, etc.).                                         |
+| `DbExecutionError` (has `.sql` and `.params`) | A `select()`/`execute()`/`executeBatch()` call failed.                                                        |
+| `DbMigrationError` (has `.version`)           | A migration failed; wraps the underlying error as `cause`. Thrown by `runMigrations`/`createDbClient`.        |
+| `DbCloseError`                                | `client.close()` failed.                                                                                      |
+| `DbTabLockError`                              | (Web adapter only, `singleTabLock: true`) Another tab already holds the database.                             |
 
 ```ts
 import { DbTabLockError } from "cross-sqlite-client";
@@ -392,8 +392,10 @@ separate tests (or parallel tests in the same process) don't share state.
 
 The library's own suite (`pnpm test`) covers the migration runner, the client
 lifecycle, and the React bindings; CI (`.github/workflows/ci.yml`) runs lint,
-typecheck, tests, build, and `publint` on Node 24 (the minimum supported
-Node version for development; see `engines` in `package.json`).
+format check (`oxfmt`), typecheck, tests, build, and `publint` on Node 24 (the
+minimum supported Node version for development; see `engines` in
+`package.json`). Run `pnpm format` before committing to keep the tree
+format-clean.
 
 ## Known limitations
 
