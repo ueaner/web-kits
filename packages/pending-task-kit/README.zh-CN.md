@@ -158,6 +158,20 @@ const poller = new PendingTaskPoller({
 })
 ```
 
+这个包发出的所有诊断告警(任务列表过大、`pollLeaseTtlMs` 非法、任务的 `type` 没有
+注册的 handler、同一个标签页里第二个 poller 共享同一个 store)默认都走
+`console.warn`——给 `createPendingTaskStore` 或 `PendingTaskPoller` 传一个 `logger`
+(`PendingTaskLogger`,即一个 `{ warn(message) }` 对象)就能把这些告警接入你自己的
+遥测/日志系统:
+
+```ts
+const poller = new PendingTaskPoller({
+  store,
+  registry,
+  logger: { warn: (message) => myTelemetry.warn(message) },
+})
+```
+
 ## 跨标签页轮询选主(默认开启)
 
 多个标签页共享同一个 store 时(它们本来就是共享的——任务本身已经通过 `storage` 事件
@@ -183,7 +197,9 @@ task 完全不发起任何网络请求。这就是 `crossTabPollLeaderElection`,
 
 同一个标签页、同一个 store 下应该只存在一个 `PendingTaskPoller` 实例——`storage` 事件
 永远不会在发起写入的那个标签页自己身上触发,所以同一个标签页里如果有第二个 poller 实例
-共享同一个 store,它将完全收不到这份广播(也收不到上面提到的任务列表同步)。
+共享同一个 store,它将完全收不到这份广播(也收不到上面提到的任务列表同步)。在第一个实例
+仍在运行时又 `start()` 第二个实例,会在运行时告警一次(通过 `logger`,见上文
+"取消、重试 backoff 与观测"一节)。
 
 如果一条广播过来的结果,到达这个标签页时可能已经"过期"(比如中途换了个账号登录、或者
 已经登出了),继续在这个标签页里重新 dispatch 出去就不对了,可以用 `acceptRelayedResult`
@@ -307,9 +323,10 @@ clearResultRelay(resultRelayKey) // 用你传入的那个 key,没传的话就是
   完全不可用等场景)——这条噪音来自 zustand 自身,不是这个包发出的;这个包自己对存储
   失败的处理是安静降级的(见 `hasUnpersistedWrites`)。
 - **`type` 和 registry 里任何 handler 都对不上的任务**(打错字,或者 handler 在任务创建
-  之后被删除/改名了),会一直挂到 TTL 才过期,期间没有任何提示。把 `TType` 参数化成一个
-  字面量字符串联合类型(而不是留成普通的 `string`),就能对你自己的 registry 做穷举
-  检查。
+  之后被删除/改名了),会一直挂到 TTL 才过期——poller 会对每个这样的 `type` 告警一次
+  (通过 `logger`,默认 `console`),所以不再是完全无感的,但任务本身不会被挽救。把
+  `TType` 参数化成一个字面量字符串联合类型(而不是留成普通的 `string`),就能对你自己的
+  registry 做穷举检查。
 - **Playwright 套件(`test-e2e/`)目前只跑 Chromium**——Safari/WebKit 的 `navigator.locks`
   实现是一个已知的可能存在差异的区域;如果这对你的用户重要,可以给
   `playwright.config.ts` 加一个 WebKit project。

@@ -96,6 +96,40 @@ describe("createPollLeaseClaimer", () => {
     expect(leaseA.claim("owner-1")).toEqual({ leader: true, fence: 1 })
     expect(leaseB.claim("owner-2")).toEqual({ leader: true, fence: 1 })
   })
+
+  it("routes the non-positive ttlMs warning through a custom logger instead of console", () => {
+    const warn = vi.fn()
+    const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+
+    createPollLeaseClaimer("test-lease-bad-ttl", 0, { logger: { warn } })
+
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0]?.[0]).toContain("pollLeaseTtlMs")
+    expect(consoleWarnSpy).not.toHaveBeenCalled()
+    consoleWarnSpy.mockRestore()
+  })
+
+  it("warns via console by default on a non-positive ttlMs", () => {
+    const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+
+    createPollLeaseClaimer("test-lease-bad-ttl-default", -1)
+
+    expect(consoleWarnSpy).toHaveBeenCalledTimes(1)
+    expect(consoleWarnSpy.mock.calls[0]?.[0]).toContain("pollLeaseTtlMs")
+    consoleWarnSpy.mockRestore()
+  })
+
+  it("a throwing logger doesn't break claimer creation on a non-positive ttlMs", () => {
+    expect(() =>
+      createPollLeaseClaimer("test-lease-throwing-logger", 0, {
+        logger: {
+          warn: () => {
+            throw new Error("telemetry is down")
+          },
+        },
+      }),
+    ).not.toThrow()
+  })
 })
 
 describe("generatePollOwnerId", () => {

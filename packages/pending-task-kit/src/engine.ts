@@ -12,6 +12,7 @@ import type {
   PendingTask,
   PendingTaskCheckResult,
   PendingTaskHandler,
+  PendingTaskLogger,
   PendingTaskRegistry,
   PendingTaskResultEventDetail,
 } from "./types"
@@ -23,6 +24,17 @@ export const DEFAULT_RESULT_EVENT = "pending-task-result"
 /** Multiplied by the effective `pollTickMs` to get the default `pollLeaseTtlMs` — see that
  *  option's doc comment for why it needs headroom over a single tick. */
 export const DEFAULT_POLL_LEASE_TTL_MULTIPLIER = 4
+
+/**
+ * At most one running poller per store per tab — keyed by store identity (typed loosely as
+ * `object`: only identity matters here, and a `PendingTaskStore<T>` isn't assignable to
+ * `PendingTaskStore<string>` under strict variance). The value is a per-poller record rather
+ * than the poller itself (same variance problem, plus a live `isStopped()` read is all the
+ * check needs). Weak so an entry can't keep a garbage-collected store alive.
+ * `PendingTaskPoller.start()`/`stop()` maintain it; see the `start()` warning for why a
+ * second live instance on the same store is flagged.
+ */
+const activePollerByStore = new WeakMap<object, { isStopped: () => boolean }>()
 
 export interface PendingTaskPollerOptions<TType extends string = string> {
   store: PendingTaskStore<TType>
@@ -73,6 +85,15 @@ export interface PendingTaskPollerOptions<TType extends string = string> {
   defaultPollIntervalMs?: number
   /** Fallback TTL (ms) for tasks whose handler doesn't set `ttlMs`. */
   defaultTtlMs?: number
+  /**
+   * Diagnostic-warning channel for the poller's own runtime warnings: a task whose `type`
+   * matches no registry entry (warned once per type per poller), and a second `start()`-ed
+   * poller sharing this store in the same tab (which would never receive relay/storage
+   * events — see the README's cross-tab section). Also forwarded to the poll-lease claimer
+   * for its invalid-`pollLeaseTtlMs` warning. Defaults to `console` — see
+   * `PendingTaskLogger`.
+   */
+  logger?: PendingTaskLogger
   maxFailureCount?: number
   /** Also `window.dispatchEvent(new CustomEvent(eventName, { detail }))` for cross-component listening. Defaults to true when `window` exists. */
   dispatchDomEvent?: boolean
@@ -237,6 +258,13 @@ export class PendingTaskPoller<TType extends string = string> {
    *  branches that bail out without ever reaching `finalize()`. Nothing here is meant to
    *  survive past the tick that added it. */
   private readonly finalCheckAttempted = new Set<string>()
+  /** Task types this poller has already warned about having no registered handler — one
+   *  warning per type per poller instance, not one per tick (a stuck task is scanned every
+   *  tick until its TTL expires, which would otherwise spam the channel on every pass). */
+  private readonly warnedTypesWithoutHandler = new Set<string>()
+  /** This instance's entry in `activePollerByStore` — compared by identity to tell "another
+   *  poller already holds this store" apart from "this is my own entry" on re-`start()`. */
+  private readonly activeRecord = { isStopped: () => this.stopped }
 
   constructor(options: PendingTaskPollerOptions<TType>) {
     const storageKey = options.storageKey ?? options.store.storageKey ?? DEFAULT_STORAGE_KEY
@@ -248,6 +276,7 @@ export class PendingTaskPoller<TType extends string = string> {
       pollTickMs,
       defaultPollIntervalMs: options.defaultPollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
       defaultTtlMs: options.defaultTtlMs ?? DEFAULT_TTL_MS,
+      logger: options.logger ?? console,
       maxFailureCount: options.maxFailureCount ?? DEFAULT_MAX_FAILURE_COUNT,
       dispatchDomEvent: options.dispatchDomEvent ?? typeof window !== "undefined",
       eventName: options.eventName ?? DEFAULT_RESULT_EVENT,
@@ -264,12 +293,37 @@ export class PendingTaskPoller<TType extends string = string> {
       onTick: options.onTick,
     }
     this.ownerId = generatePollOwnerId()
-    this.pollLease = createPollLeaseClaimer(this.options.pollLeaseKey, this.options.pollLeaseTtlMs)
+    this.pollLease = createPollLeaseClaimer(this.options.pollLeaseKey, this.options.pollLeaseTtlMs, {
+      logger: this.options.logger,
+    })
   }
 
   start(): void {
     this.stopped = false
     if (this.intervalId !== undefined) return
+
+    // Same-tab duplicate detection (see activePollerByStore above): a second live poller on
+    // the same store in the *same* tab never receives the cross-tab relay or task-list sync
+    // ("storage" events don't fire back in the tab that wrote them), so its dispatchDomEvent
+    // listeners silently miss every result another tab detected. Registering unconditionally
+    // (even when replacing a stopped instance) keeps the map pointing at whichever instance
+    // most recently claimed the store.
+    const previous = activePollerByStore.get(this.options.store)
+    if (previous !== undefined && previous !== this.activeRecord && !previous.isStopped()) {
+      try {
+        this.options.logger.warn(
+          `pending-task-kit: a second PendingTaskPoller was start()ed on the same store ` +
+            `(storageKey "${this.options.storageKey}") in this tab while the first is still running. ` +
+            "Only one poller per store per tab receives storage/relay events — the second " +
+            "instance will silently miss results detected by the other. Keep a single poller " +
+            "instance per store (e.g. a module-level singleton).",
+        )
+      } catch {
+        // Same tolerance the store's size warning gives a throwing logger — a diagnostic
+        // channel must never take down the code path it's diagnosing.
+      }
+    }
+    activePollerByStore.set(this.options.store, this.activeRecord)
 
     this.intervalId = setInterval(() => {
       this.runTickSafely(false)
@@ -318,6 +372,9 @@ export class PendingTaskPoller<TType extends string = string> {
   stop(): void {
     this.stopped = true
     this.pendingForce = false
+    if (activePollerByStore.get(this.options.store) === this.activeRecord) {
+      activePollerByStore.delete(this.options.store)
+    }
     // Cancels whatever handler.check() call is currently in flight, if any — the one moment
     // this poller can proactively act on rather than just discarding a response after the fact
     // once it arrives; see PendingTaskHandler.check's doc comment.
@@ -619,7 +676,23 @@ export class PendingTaskPoller<TType extends string = string> {
         if (!handler) {
           // No handler to poll with (e.g. removed/renamed since this task was created) — the
           // only thing we can still do for it is let it expire instead of lingering forever.
-          // Pure local bookkeeping, no network call — doesn't need leadership.
+          // Pure local bookkeeping, no network call — doesn't need leadership. Warn once per
+          // type (not once per tick — this branch runs on every tick until the TTL expires):
+          // a silent linger here previously meant a typo'd type or a deleted/renamed handler
+          // was indistinguishable from a task that's just slow to finish.
+          if (!this.warnedTypesWithoutHandler.has(task.type)) {
+            this.warnedTypesWithoutHandler.add(task.type)
+            try {
+              this.options.logger.warn(
+                `pending-task-kit: task "${task.id}" has type "${task.type}", which matches no ` +
+                  "registered handler — it will sit unpolled until its TTL expires. This usually " +
+                  "means the type is typo'd, or the handler was removed/renamed after the task " +
+                  "was created.",
+              )
+            } catch {
+              // A diagnostic channel must never take down the tick it's diagnosing.
+            }
+          }
           if (expired) {
             await this.finalize(task, { status: "expired" }, handler, batch)
           }

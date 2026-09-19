@@ -1,4 +1,11 @@
 import { safeGetItem, safeSetItem } from "./safe-storage"
+import type { PendingTaskLogger } from "./types"
+
+export interface PollLeaseClaimerOptions {
+  /** Diagnostic-warning channel for the invalid-`ttlMs` warning below. Defaults to `console`
+   *  — see `PendingTaskLogger`. */
+  logger?: PendingTaskLogger
+}
 
 interface PollLeaseRecord {
   ownerId: string
@@ -93,15 +100,25 @@ function writeLease(storageKey: string, lease: PollLeaseRecord): void {
  * so a leader that stops renewing (closed, crashed, or frozen) can't permanently block
  * every other owner from taking over. See `PollLeaseClaimer.release` for why this matters.
  */
-export function createPollLeaseClaimer(storageKey: string, ttlMs: number): PollLeaseClaimer {
-  if (ttlMs <= 0 && typeof console !== "undefined") {
+export function createPollLeaseClaimer(
+  storageKey: string,
+  ttlMs: number,
+  options?: PollLeaseClaimerOptions,
+): PollLeaseClaimer {
+  const logger = options?.logger ?? (typeof console !== "undefined" ? console : undefined)
+  if (ttlMs <= 0 && logger) {
     // A non-positive TTL makes every claim expire before (or the instant) it's written, so
     // election silently stops electing anyone — every tab's every claim looks like a fresh,
     // unheld one, and the fence climbs on every single call instead of settling once a tab
     // holds an uncontested lease. Not fatal (best-effort election just degrades to "every tab
     // polls independently," same as turning `crossTabPollLeaderElection` off), but almost
     // certainly a misconfiguration, so it's worth flagging at the point it's easiest to notice.
-    console.warn(`pending-task-kit: pollLeaseTtlMs must be positive, got ${ttlMs}`)
+    try {
+      logger.warn(`pending-task-kit: pollLeaseTtlMs must be positive, got ${ttlMs}`)
+    } catch {
+      // A diagnostic channel must never take down the code path it's diagnosing — see
+      // `PendingTaskLogger`.
+    }
   }
   return {
     claim(ownerId) {

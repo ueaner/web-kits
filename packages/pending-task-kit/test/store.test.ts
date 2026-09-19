@@ -167,5 +167,100 @@ describe("createPendingTaskStore", () => {
       expect(warnSpy).toHaveBeenCalledTimes(1)
       expect(warnSpy.mock.calls[0]?.[0]).toContain(storageKey)
     })
+
+    it("routes the warning through a custom logger instead of console", () => {
+      const warn = vi.fn()
+      const store = createPendingTaskStore({
+        storageKey: "test-tasks-warn-logger",
+        taskListWarnThreshold: 2,
+        logger: { warn },
+      })
+
+      store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+      store.getState().addTask({ id: "b", type: "demo", taskId: 2, startedAt: Date.now() })
+      store.getState().addTask({ id: "c", type: "demo", taskId: 3, startedAt: Date.now() })
+
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(warn.mock.calls[0]?.[0]).toContain("test-tasks-warn-logger")
+      // The default console channel (already mocked by this describe's beforeEach) stays silent.
+      expect(warnSpy).not.toHaveBeenCalled()
+    })
+
+    it("a throwing logger doesn't take down the write that triggered the warning", () => {
+      const store = createPendingTaskStore({
+        storageKey: "test-tasks-warn-throwing",
+        taskListWarnThreshold: 1,
+        logger: {
+          warn: () => {
+            throw new Error("telemetry is down")
+          },
+        },
+      })
+
+      store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+      // Crosses the threshold on this write; the logger throws, the write must still land.
+      store.getState().addTask({ id: "b", type: "demo", taskId: 2, startedAt: Date.now() })
+
+      expect(store.getState().tasks).toHaveLength(2)
+    })
+  })
+
+  describe("persist versioning", () => {
+    it("hydrates a pre-versioning persisted entry (version 0) via the pass-through migrate", () => {
+      // The shape 0.2.0 and earlier actually wrote: zustand's persist serializes the default
+      // `version: 0` alongside the state on every write, so real legacy entries carry a numeric
+      // version that mismatches the current `version: 1`. That mismatch is what routes the
+      // entry through `migrate` — without the pass-through, zustand would discard it entirely,
+      // silently wiping every pre-upgrade user's tasks.
+      const storageKey = "test-tasks-migrate-legacy"
+      localStorage.setItem(
+        storageKey,
+        JSON.stringify({
+          state: { tasks: [{ id: "a", type: "demo", taskId: 1, startedAt: 123 }] },
+          version: 0,
+        }),
+      )
+
+      const store = createPendingTaskStore({ storageKey })
+
+      expect(store.getState().tasks).toEqual([
+        expect.objectContaining({ id: "a", type: "demo", taskId: 1, startedAt: 123 }),
+      ])
+    })
+
+    it("hydrates a version-less entry as-is (robustness — zustand skips migrate when the field is absent)", () => {
+      // Not a shape any released version wrote; zustand only calls `migrate` when the stored
+      // version is a *number* that mismatches, so a missing version bypasses it entirely and
+      // hydrates directly. Pinned so a future "route everything through migrate" refactor
+      // doesn't accidentally start discarding these.
+      const storageKey = "test-tasks-migrate-no-version"
+      localStorage.setItem(
+        storageKey,
+        JSON.stringify({
+          state: { tasks: [{ id: "b", type: "demo", taskId: 2, startedAt: 456 }] },
+        }),
+      )
+
+      const store = createPendingTaskStore({ storageKey })
+
+      expect(store.getState().tasks).toEqual([
+        expect.objectContaining({ id: "b", type: "demo", taskId: 2, startedAt: 456 }),
+      ])
+    })
+
+    it("hydrates a current-version entry normally", () => {
+      const storageKey = "test-tasks-migrate-current"
+      localStorage.setItem(
+        storageKey,
+        JSON.stringify({
+          state: { tasks: [{ id: "a", type: "demo", taskId: 1, startedAt: 123 }] },
+          version: 1,
+        }),
+      )
+
+      const store = createPendingTaskStore({ storageKey })
+
+      expect(store.getState().tasks).toHaveLength(1)
+    })
   })
 })

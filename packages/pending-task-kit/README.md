@@ -166,6 +166,20 @@ const poller = new PendingTaskPoller({
 })
 ```
 
+Every diagnostic warning this package emits (an oversized task list, an invalid
+`pollLeaseTtlMs`, a task whose `type` has no registered handler, a second poller started on
+the same store in the same tab) goes to `console.warn` by default — pass a `logger`
+(`PendingTaskLogger`, a `{ warn(message) }` object) to `createPendingTaskStore` or
+`PendingTaskPoller` to route those into your own telemetry/logging instead:
+
+```ts
+const poller = new PendingTaskPoller({
+  store,
+  registry,
+  logger: { warn: (message) => myTelemetry.warn(message) },
+})
+```
+
 ## Cross-tab poll-leader election (on by default)
 
 When multiple tabs share the same store — they already do, since tasks sync across tabs via
@@ -194,7 +208,9 @@ notifying," consistently, regardless of which tab happened to detect the result.
 
 Only one `PendingTaskPoller` instance should exist per tab per store — a `storage` event never
 fires back in the tab that made the write, so a second poller instance sharing the same store
-in the *same* tab would never receive this relay (or the task-list sync above) at all.
+in the *same* tab would never receive this relay (or the task-list sync above) at all. Starting
+a second one while the first is still running warns once at runtime (via `logger` — see
+"Cancellation, retry backoff, and observability" above).
 
 If a relayed result could belong to a session that's ended in *this* tab by the time it
 arrives (a different account signed in, a logout) and re-surfacing it here would be wrong,
@@ -331,9 +347,10 @@ they're documented somewhere instead of only in source comments:
   storage fully unavailable) — that noise comes from zustand itself, not from this package,
   which otherwise degrades storage failures quietly (see `hasUnpersistedWrites`).
 - **A task whose `type` doesn't match any registry entry** (typo'd, or a handler that was
-  removed/renamed after the task was created) just sits until its TTL expires, with no warning.
-  Parameterize `TType` with a literal string union (rather than leaving it as plain `string`) to
-  get exhaustiveness checking on your own registry instead.
+  removed/renamed after the task was created) sits until its TTL expires — the poller warns
+  once per such `type` (via `logger`, defaulting to `console`) so it isn't silent, but nothing
+  recovers the task itself. Parameterize `TType` with a literal string union (rather than
+  leaving it as plain `string`) to get exhaustiveness checking on your own registry instead.
 - **The Playwright suite (`test-e2e/`) only runs against Chromium** — Safari/WebKit's
   `navigator.locks` implementation is a known area where behavior could differ; add a WebKit
   project to `playwright.config.ts` if that matters for your users.
