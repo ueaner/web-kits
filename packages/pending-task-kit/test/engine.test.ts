@@ -42,7 +42,11 @@ describe("PendingTaskPoller", () => {
     poller.stop()
   })
 
-  it("suppresses onResult when the handler sets silentOnSuccess", async () => {
+  it("still calls onResult with silent: true when the handler sets silentOnSuccess", async () => {
+    // silentOnSuccess/silentOnFailure mark the outcome, they don't withhold onResult — the
+    // engine has no notion of "notification" to decide that on the caller's behalf (see the
+    // doc comment on PendingTaskHandler.silentOnFailure). A caller that wants the old
+    // "skip onResult entirely" behavior can do `if (detail.silent) return` itself.
     const store = createPendingTaskStore({ storageKey: "engine-silent" })
     store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
 
@@ -58,7 +62,21 @@ describe("PendingTaskPoller", () => {
     await flush()
 
     expect(store.getState().tasks).toHaveLength(0)
-    expect(onResult).not.toHaveBeenCalled()
+    expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ status: "success", silent: true }))
+    poller.stop()
+  })
+
+  it("marks a non-silent outcome as silent: false", async () => {
+    const store = createPendingTaskStore({ storageKey: "engine-not-silent" })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+
+    const check = vi.fn().mockResolvedValue({ status: "success" })
+    const onResult = vi.fn()
+    const poller = new PendingTaskPoller({ store, registry: { demo: { check } }, onResult })
+    poller.forceCheckAll()
+    await flush()
+
+    expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ silent: false }))
     poller.stop()
   })
 
@@ -782,7 +800,10 @@ describe("PendingTaskPoller", () => {
       }),
     )
 
-    expect(events).toEqual([relayedDetail])
+    // The fixture deliberately omits `silent`, like a relay written by an older version of
+    // this package still running in another tab mid-deploy — the receiving side must default
+    // it to false rather than passing `undefined` through to listeners (see parseResultRelay).
+    expect(events).toEqual([{ ...relayedDetail, silent: false }])
 
     window.removeEventListener("pending-task-result", listener)
     poller.stop()
@@ -800,7 +821,7 @@ describe("PendingTaskPoller", () => {
     window.addEventListener("pending-task-result", listener)
 
     const relayedTask = { id: "a", type: "demo", taskId: 1, startedAt: Date.now() }
-    const relayedDetail = { task: relayedTask, status: "success" }
+    const relayedDetail = { task: relayedTask, status: "success", silent: false }
     window.dispatchEvent(
       new StorageEvent("storage", {
         key: `${storageKey}-result-relay`,
@@ -832,6 +853,34 @@ describe("PendingTaskPoller", () => {
     expect(raw).not.toBeNull()
     expect(JSON.parse(raw as string)).toMatchObject({ status: "success" })
 
+    poller.stop()
+  })
+
+  it("still writes the relay and dispatches the DOM event for a silent outcome", async () => {
+    // `silent` gates nothing engine-side anymore (see finalize()'s comment) — a silent success
+    // must reach every channel a non-silent one does: claimResultOnce/onResult/relay/DOM event.
+    const storageKey = "engine-silent-relay"
+    const store = createPendingTaskStore({ storageKey })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+
+    const check = vi.fn().mockResolvedValue({ status: "success" })
+    const claimResultOnce = vi.fn().mockReturnValue(true)
+    const registry: PendingTaskRegistry = { demo: { check, silentOnSuccess: true } }
+    const poller = new PendingTaskPoller({ store, registry, claimResultOnce })
+
+    const events: unknown[] = []
+    const listener = (event: Event) => events.push((event as CustomEvent).detail)
+    window.addEventListener("pending-task-result", listener)
+
+    poller.forceCheckAll()
+    await flush()
+
+    expect(claimResultOnce).toHaveBeenCalledTimes(1)
+    const raw = localStorage.getItem(`${storageKey}-result-relay`)
+    expect(JSON.parse(raw as string)).toMatchObject({ status: "success", silent: true })
+    expect(events).toEqual([expect.objectContaining({ status: "success", silent: true })])
+
+    window.removeEventListener("pending-task-result", listener)
     poller.stop()
   })
 
@@ -873,7 +922,7 @@ describe("PendingTaskPoller", () => {
     poller.start()
 
     const relayedTask = { id: "a", type: "demo", taskId: 1, startedAt: Date.now() }
-    const relayedDetail = { task: relayedTask, status: "success" }
+    const relayedDetail = { task: relayedTask, status: "success", silent: false }
     window.dispatchEvent(
       new StorageEvent("storage", {
         key: `${storageKey}-result-relay`,

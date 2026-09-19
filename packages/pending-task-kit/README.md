@@ -36,10 +36,12 @@ pnpm add pending-task-kit zustand
   once (`console.warn`) if the tracked task count crosses `taskListWarnThreshold` (default 200) — the whole list is one JSON blob rewritten on every change, so a very large list
   risks the ~5MB per-origin quota.
 - **Poller** (`PendingTaskPoller`) — the engine: scans tasks on an interval, calls the
-  matching handler, and resolves each task to `success`/`failure` (dispatched via
-  `onResult`), to `error` (dispatched unless `silentOnFailure`) when `check()` itself kept
-  throwing until `maxFailureCount`, or silently to `expired` when the TTL ran out first —
-  `error`/`expired` are the engine's own doing, never something a handler returns itself.
+  matching handler, and resolves each task to `success`/`failure` or `error` (`check()` itself
+  kept throwing until `maxFailureCount`) — always dispatched via `onResult`, with `detail.silent`
+  set from `silentOnSuccess`/`silentOnFailure` for `onResult` to act on itself (the engine
+  never withholds the call; see `onResult`'s own doc comment) — or silently to `expired` when
+  the TTL ran out first, which never reaches `onResult` at all. `error`/`expired` are the
+  engine's own doing, never something a handler returns itself.
 
 ## Usage (core, no React)
 
@@ -87,6 +89,9 @@ const poller = new PendingTaskPoller({
   store,
   registry,
   onResult: (detail) => {
+    // Handlers marked silentOnSuccess/silentOnFailure still call this — detail.silent is how
+    // you know. Skipping everything is one option; skipping only the toast is another.
+    if (detail.silent) return
     const data = detail.data as { href?: string; message?: string } | undefined
     if (detail.status === "success") showToast(data?.message ?? "Done", { href: data?.href })
     if (detail.status === "failure") showToast(data?.message ?? "Failed", { variant: "error" })

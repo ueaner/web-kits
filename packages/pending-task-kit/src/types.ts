@@ -94,10 +94,13 @@ export interface PendingTaskHandler<TType extends string = string> {
   ttlMs?: number
   /** Force one last `check()` exactly at TTL expiry instead of silently dropping the task. */
   finalCheckOnExpiry?: boolean
-  /** Suppress `onResult` for a `failure` or `error` outcome (still resolved internally).
-   *  `expired` is always silent regardless of this flag — see `PendingTaskResultStatus`. */
+  /** Marks a `failure` or `error` outcome as `detail.silent` in the call to `onResult` —
+   *  doesn't skip that call. `onResult` still always fires (claimResultOnce/relay/DOM event
+   *  too); the engine has no notion of what "silent" should mean to your app (skip a toast but
+   *  still invalidate a cache? skip everything?), so it never decides that for you. `expired`
+   *  never reaches `onResult` at all regardless of this flag — see `PendingTaskResultStatus`. */
   silentOnFailure?: boolean
-  /** Suppress `onResult` for a `success` outcome. */
+  /** Same as `silentOnFailure`, but for a `success` outcome. */
   silentOnSuccess?: boolean
 }
 
@@ -106,5 +109,10 @@ export type PendingTaskRegistry<TType extends string = string> = Partial<Record<
 export interface PendingTaskResultEventDetail<TType extends string = string> {
   task: PendingTask<TType>
   status: PendingTaskResultStatus
+  /** From the handler's `silentOnSuccess`/`silentOnFailure` for this outcome (`false` if
+   *  unset). Purely informational — the engine already called you regardless of this value;
+   *  it's on you to skip whatever "silent" should mean for this outcome (typically: don't show
+   *  a toast, but still do other `onResult` work like a cache invalidation or a view switch). */
+  silent: boolean
   data?: unknown
 }
