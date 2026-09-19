@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-09-20
+
+### Changed
+
+- sqlite-wasm optional dependency bumped to `^3.53.4-build1`（SQLite 内核 3.53.0 → 3.53.4，纯上游 bug 修复），`vitest` 等开发依赖同步更新
+- package.json 声明 `engines: { node: ">=24" }`：库的运行时（浏览器/Tauri）不受影响，但 Node < 24 的使用方安装时会看到 EBADENGINE 警告
+
 ## [0.2.0] - 2026-09-19
 
 ### BREAKING CHANGES
