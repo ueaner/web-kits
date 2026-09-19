@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history, not the default shallow clone — `changeset status --since` below
+          # needs to diff against the PR's base branch.
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm pub:check
+
+      # PRs that change shippable code must carry a changeset; docs-only/chore PRs can
+      # opt out with `pnpm changeset --empty`.
+      - name: Require a changeset for changes that should ship in a release
+        if: github.event_name == 'pull_request'
+        run: pnpm exec changeset status --since=origin/${{ github.base_ref }}
