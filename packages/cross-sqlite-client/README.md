@@ -392,7 +392,8 @@ separate tests (or parallel tests in the same process) don't share state.
 
 The library's own suite (`pnpm test`) covers the migration runner, the client
 lifecycle, and the React bindings; CI (`.github/workflows/ci.yml`) runs lint,
-typecheck, tests, build, and `publint` on Node 20/22.
+typecheck, tests, build, and `publint` on Node 24 (the minimum supported
+Node version for development; see `engines` in `package.json`).
 
 ## Known limitations
 
