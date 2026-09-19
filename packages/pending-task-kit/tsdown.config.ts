@@ -1,14 +1,13 @@
-import { defineConfig } from "tsup"
+import { defineConfig } from "tsdown"
 
 export default defineConfig({
   entry: {
     index: "src/index.ts",
     react: "src/react.ts",
   },
-  format: ["esm"],
+  format: "esm",
   dts: true,
-  sourcemap: true,
   clean: true,
-  splitting: false,
+  platform: "neutral",
   external: ["react", "zustand", "zustand/middleware"],
 })
