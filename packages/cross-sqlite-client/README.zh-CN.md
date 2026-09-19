@@ -83,16 +83,16 @@ function TodoList() {
 
 ### 核心（`cross-sqlite-client`）
 
-| 导出 | 说明 |
-|---|---|
-| `createDbClient(options)` | 初始化适配器、应用 `pragmas`、执行待应用迁移，返回 `Promise<DbClient>`。若 PRAGMA/迁移阶段失败，会先关闭已打开的连接再向上抛错。 |
-| `runMigrations(db, migrations, options?)` | `createDbClient` 内部使用的迁移运行器；不经过 `createDbClient` 时可直接调用。 |
-| `defaultExecutor` | 未设置 `migrationOptions.executor` 时使用的默认迁移执行器：通过 `executeBatch()` 执行一个迁移的全部语句，无事务包裹。 |
-| `DbClient`（类型） | `{ select<T>(sql, params?), execute(sql, params?), executeBatch(statements), close() }` —— 详见下文。 |
-| `DbAdapter` / `DbAdapterConfig`（类型） | 各 `createXAdapter()` 工厂返回的接口 / 传给 `initialize()` 的 `{ name }` 配置。 |
-| `BatchStatement` / `Logger`（类型） | `executeBatch()` 的语句类型 `string \| { sql, params? }` / 诊断输出通道（`{ warn, error }`，默认 `console`）。 |
-| `Migration` / `MigrationExecutor` / `MigrationOptions`（类型） | 见[编写迁移](#编写迁移)。 |
-| `DbError` 及子类 | 见[错误](#错误)。 |
+| 导出                                                           | 说明                                                                                                                             |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `createDbClient(options)`                                      | 初始化适配器、应用 `pragmas`、执行待应用迁移，返回 `Promise<DbClient>`。若 PRAGMA/迁移阶段失败，会先关闭已打开的连接再向上抛错。 |
+| `runMigrations(db, migrations, options?)`                      | `createDbClient` 内部使用的迁移运行器；不经过 `createDbClient` 时可直接调用。                                                    |
+| `defaultExecutor`                                              | 未设置 `migrationOptions.executor` 时使用的默认迁移执行器：通过 `executeBatch()` 执行一个迁移的全部语句，无事务包裹。            |
+| `DbClient`（类型）                                             | `{ select<T>(sql, params?), execute(sql, params?), executeBatch(statements), close() }` —— 详见下文。                            |
+| `DbAdapter` / `DbAdapterConfig`（类型）                        | 各 `createXAdapter()` 工厂返回的接口 / 传给 `initialize()` 的 `{ name }` 配置。                                                  |
+| `BatchStatement` / `Logger`（类型）                            | `executeBatch()` 的语句类型 `string \| { sql, params? }` / 诊断输出通道（`{ warn, error }`，默认 `console`）。                   |
+| `Migration` / `MigrationExecutor` / `MigrationOptions`（类型） | 见[编写迁移](#编写迁移)。                                                                                                        |
+| `DbError` 及子类                                               | 见[错误](#错误)。                                                                                                                |
 
 ```ts
 import { createDbClient, runMigrations, defaultExecutor } from "cross-sqlite-client";
@@ -133,31 +133,31 @@ await createDbClient({
 
 每次调用 `createXAdapter()` 都会返回一个**全新的、相互独立的** `DbAdapter` 实例（没有模块级单例状态），因此同一进程里可以放心创建多个——例如测试里。
 
-| 子路径 | 工厂 | 底层驱动 | `singleConnection` |
-|---|---|---|---|
-| `cross-sqlite-client/adapters/web` | `createWebAdapter(options?)` | `@sqlite.org/sqlite-wasm`（Worker） | `true` |
-| `cross-sqlite-client/adapters/tauri` | `createTauriAdapter()` | `@tauri-apps/plugin-sql` | `false` |
-| `cross-sqlite-client/adapters/memory` | `createMemoryAdapter()` | `@sqlite.org/sqlite-wasm`（Node/主线程，内存） | `true` |
+| 子路径                                | 工厂                         | 底层驱动                                       | `singleConnection` |
+| ------------------------------------- | ---------------------------- | ---------------------------------------------- | ------------------ |
+| `cross-sqlite-client/adapters/web`    | `createWebAdapter(options?)` | `@sqlite.org/sqlite-wasm`（Worker）            | `true`             |
+| `cross-sqlite-client/adapters/tauri`  | `createTauriAdapter()`       | `@tauri-apps/plugin-sql`                       | `false`            |
+| `cross-sqlite-client/adapters/memory` | `createMemoryAdapter()`      | `@sqlite.org/sqlite-wasm`（Node/主线程，内存） | `true`             |
 
 `singleConnection` 表示该适配器的每次 `execute()`/`select()` 是否保证落在同一条物理连接上——为什么重要，见[自定义迁移执行器](#自定义迁移执行器与-singleconnection)。
 
 **`createWebAdapter(options?)` 选项：**
 
-| 选项 | 默认值 | 说明 |
-|---|---|---|
-| `timeoutMs` | `15000` | 等待 SQLite Worker 就绪的超时时间；若 Worker 脚本加载失败，不设超时会让 `initialize()` 永远 pending。 |
-| `fallbackToMemory` | `true` | OPFS 不可用时是否静默回退到 `:memory:`（包括探测通过但打开 OPFS 文件失败的情况），而不是抛错。详见 [COOP/COEP](#opfs-持久化需要-coopcoep)。 |
-| `singleTabLock` | `true` | 是否跨浏览器标签页协调对同一 OPFS 文件的访问。详见[多标签页协调](#多标签页协调)。 |
-| `logger` | `console` | 诊断信息（OPFS 降级告警、Worker 错误）的输出位置。传入自己的 `{ warn, error }` 可接入应用的日志/监控。 |
+| 选项               | 默认值    | 说明                                                                                                                                        |
+| ------------------ | --------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `timeoutMs`        | `15000`   | 等待 SQLite Worker 就绪的超时时间；若 Worker 脚本加载失败，不设超时会让 `initialize()` 永远 pending。                                       |
+| `fallbackToMemory` | `true`    | OPFS 不可用时是否静默回退到 `:memory:`（包括探测通过但打开 OPFS 文件失败的情况），而不是抛错。详见 [COOP/COEP](#opfs-持久化需要-coopcoep)。 |
+| `singleTabLock`    | `true`    | 是否跨浏览器标签页协调对同一 OPFS 文件的访问。详见[多标签页协调](#多标签页协调)。                                                           |
+| `logger`           | `console` | 诊断信息（OPFS 降级告警、Worker 错误）的输出位置。传入自己的 `{ warn, error }` 可接入应用的日志/监控。                                      |
 
 **`createTauriAdapter()`** 和 **`createMemoryAdapter()`** 不接受选项。`createMemoryAdapter()` 用于测试——见[测试](#测试)。
 
 ### React（`cross-sqlite-client/react`）
 
-| 导出 | 说明 |
-|---|---|
+| 导出                              | 说明                                                                                                                                                                                                                                    |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `<DatabaseProvider client={...}>` | 接收 `DbClient` 或 `Promise<DbClient>`（通常是 `createDbClient()` 的返回值），解析后通过 Context 暴露。它**不**决定用哪个适配器或迁移哪些 schema——那是应用层的职责（见快速开始）——也**不**在卸载时调用 `client.close()`（原因见下文）。 |
-| `useDatabase()` | 读取 Context：`{ dbClient, isDbReady, isLoading, dbError }`。在 `DatabaseProvider` 外调用会抛错。 |
+| `useDatabase()`                   | 读取 Context：`{ dbClient, isDbReady, isLoading, dbError }`。在 `DatabaseProvider` 外调用会抛错。                                                                                                                                       |
 
 关于 `DatabaseProvider` 有两点值得注意：
 
@@ -196,9 +196,9 @@ interface Migration {
 
 ```ts
 interface MigrationOptions {
-  tableName?: string;    // 版本表名，默认 "schema_version"；仅限合法标识符
+  tableName?: string; // 版本表名，默认 "schema_version"；仅限合法标识符
   executor?: MigrationExecutor; // 见下一节
-  logger?: Logger;       // 覆盖 createDbClient 的 logger，仅作用于迁移阶段的诊断输出
+  logger?: Logger; // 覆盖 createDbClient 的 logger，仅作用于迁移阶段的诊断输出
 }
 ```
 
@@ -242,14 +242,14 @@ sqlite-wasm 的 `opfs` VFS 自带锁协议，因此两个标签页同时写同�
 
 所有适配器都抛出以下错误类（全部继承 `DbError extends Error`，均可选传入 `cause`）：
 
-| 类 | 触发时机 |
-|---|---|
-| `DbError` | 通用/用法错误，例如 `initialize()` 还没 resolve 就调用 `select()`/`execute()`，或 `close()` 之后调用。 |
-| `DbInitializationError` | `adapter.initialize()` 失败（Worker/OPFS/Tauri 加载失败等）。 |
-| `DbExecutionError`（带 `.sql` 和 `.params`） | `select()`/`execute()`/`executeBatch()` 调用失败。 |
-| `DbMigrationError`（带 `.version`） | 某条迁移失败；底层错误包装在 `cause` 里。由 `runMigrations`/`createDbClient` 抛出。 |
-| `DbCloseError` | `client.close()` 失败。 |
-| `DbTabLockError` | （仅 Web 适配器，`singleTabLock: true`）另一个标签页已持有数据库锁。 |
+| 类                                           | 触发时机                                                                                               |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `DbError`                                    | 通用/用法错误，例如 `initialize()` 还没 resolve 就调用 `select()`/`execute()`，或 `close()` 之后调用。 |
+| `DbInitializationError`                      | `adapter.initialize()` 失败（Worker/OPFS/Tauri 加载失败等）。                                          |
+| `DbExecutionError`（带 `.sql` 和 `.params`） | `select()`/`execute()`/`executeBatch()` 调用失败。                                                     |
+| `DbMigrationError`（带 `.version`）          | 某条迁移失败；底层错误包装在 `cause` 里。由 `runMigrations`/`createDbClient` 抛出。                    |
+| `DbCloseError`                               | `client.close()` 失败。                                                                                |
+| `DbTabLockError`                             | （仅 Web 适配器，`singleTabLock: true`）另一个标签页已持有数据库锁。                                   |
 
 ```ts
 import { DbTabLockError } from "cross-sqlite-client";
@@ -278,7 +278,7 @@ await runMigrations(client, APP_MIGRATIONS);
 
 每次 `createMemoryAdapter()` 调用都是一个全新的独立实例，因此不同测试（或同一进程里的并行测试）不会共享状态。
 
-库自身的测试套件（`pnpm test`）覆盖迁移运行器、客户端生命周期和 React 绑定；CI（`.github/workflows/ci.yml`）在 Node 24 上运行 lint、typecheck、测试、构建和 `publint`（Node 24 是开发的最低版本要求，见 `package.json` 的 `engines`）。
+库自身的测试套件（`pnpm test`）覆盖迁移运行器、客户端生命周期和 React 绑定；CI（`.github/workflows/ci.yml`）在 Node 24 上运行 lint、格式检查（`oxfmt`）、typecheck、测试、构建和 `publint`（Node 24 是开发的最低版本要求，见 `package.json` 的 `engines`）。提交前请运行 `pnpm format` 保持代码树格式整洁。
 
 ## 已知限制
 

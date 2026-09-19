@@ -69,5 +69,15 @@ export async function createDbClient(options: CreateDbClientOptions): Promise<Db
 }
 
 export { runMigrations, defaultExecutor } from "./migrate";
-export type { DbClient, DbAdapter, DbAdapterConfig, BatchStatement, Logger, Migration, MigrationExecutor, MigrationOptions, CreateDbClientOptions } from "./types";
+export type {
+  DbClient,
+  DbAdapter,
+  DbAdapterConfig,
+  BatchStatement,
+  Logger,
+  Migration,
+  MigrationExecutor,
+  MigrationOptions,
+  CreateDbClientOptions,
+} from "./types";
 export { DbError, DbInitializationError, DbExecutionError, DbMigrationError, DbCloseError, DbTabLockError } from "./errors";

@@ -6,7 +6,9 @@ const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export function assertIdentifier(value: string, what: string): void {
   if (!IDENTIFIER_RE.test(value)) {
-    throw new Error(`${what} must match ${IDENTIFIER_RE} (letters, digits, underscore; not starting with a digit), got ${JSON.stringify(value)}.`);
+    throw new Error(
+      `${what} must match ${IDENTIFIER_RE} (letters, digits, underscore; not starting with a digit), got ${JSON.stringify(value)}.`,
+    );
   }
 }
 

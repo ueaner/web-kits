@@ -45,6 +45,7 @@ jobs:
       - run: pnpm run build # pub:check inspects dist/, so build must precede it
       - run: pnpm run typecheck
       - run: pnpm run lint
+      - run: pnpm run format:check
       - run: pnpm run test
       - run: pnpm run pub:check
       # `--no-git-checks`: pnpm publish's own git-cleanliness/branch checks don't make sense

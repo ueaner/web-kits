@@ -30,11 +30,9 @@ describe("runMigrations", () => {
 
   it("supports a custom transactional executor on a single-connection adapter", async () => {
     const client = await createMemoryAdapter().initialize({ name: "test" });
-    await runMigrations(
-      client,
-      [{ version: 1, statements: ["CREATE TABLE t (id INTEGER PRIMARY KEY);"] }],
-      { executor: transactionalExecutor },
-    );
+    await runMigrations(client, [{ version: 1, statements: ["CREATE TABLE t (id INTEGER PRIMARY KEY);"] }], {
+      executor: transactionalExecutor,
+    });
     const rows = await client.select<{ version: number }>("SELECT version FROM schema_version;");
     expect(rows).toEqual([{ version: 1 }]);
   });
