@@ -346,6 +346,9 @@ clearResultRelay(resultRelayKey) // 用你传入的那个 key,没传的话就是
 
 ## 贡献指南
 
+开发环境需要 Node 24+(见 `package.json` 的 `engines`;库本身是浏览器运行时、不依赖
+Node——这只是工具链的要求)。
+
 `pnpm typecheck && pnpm lint && pnpm test && pnpm build` 应该全部通过;`pnpm test:e2e`
 会跑一个基于真实 Chromium 的小型 Playwright 套件(`test-e2e/`),专门验证跨标签页
 `navigator.locks` 仲裁和真实的 `storage` 事件——这正是基于 jsdom 的 `pnpm test` 那套
