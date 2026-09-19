@@ -33,8 +33,7 @@ pnpm add pending-task-kit zustand
   that only take `task` keep working unmodified) or wire into your own request.
 - **Registry** (`PendingTaskRegistry`) — a plain `{ [type]: handler }` map.
 - **Store** — a zustand store, persisted to `localStorage`, holding the task list. Warns
-  once (`console.warn`) if the tracked task count crosses `taskListWarnThreshold` (default
-  200) — the whole list is one JSON blob rewritten on every change, so a very large list
+  once (`console.warn`) if the tracked task count crosses `taskListWarnThreshold` (default 200) — the whole list is one JSON blob rewritten on every change, so a very large list
   risks the ~5MB per-origin quota.
 - **Poller** (`PendingTaskPoller`) — the engine: scans tasks on an interval, calls the
   matching handler, and resolves each task to `success`/`failure` (dispatched via
@@ -135,7 +134,7 @@ Mount `<PendingTaskNotifier />` once near your app root.
 `stop()` aborts the `AbortSignal` passed to whichever `handler.check()` call is currently in
 flight, if any — wire it into your own request (`fetch(url, { signal })`) if you want a
 stopped poller to actually cancel outstanding network work instead of only discarding the
-response once it arrives. Losing leadership to another tab is only ever discovered *after*
+response once it arrives. Losing leadership to another tab is only ever discovered _after_
 `check()` has already settled, so that's the only thing that ever aborts it; handlers that
 ignore `signal` keep working exactly as before.
 
@@ -147,7 +146,9 @@ once:
 ```ts
 const registry = {
   search: {
-    check: async (task, signal) => { /* ... */ },
+    check: async (task, signal) => {
+      /* ... */
+    },
     retryBackoffMs: (failureCount) => Math.min(1_000 * 2 ** failureCount, 60_000), // capped exponential
   },
 }
@@ -203,16 +204,16 @@ tab through a second localStorage key (`resultRelayKey`, default
 also has `dispatchDomEvent` on) its own `CustomEvent`, from the relayed data, the same as if it
 had detected the completion itself. If you've composed `claimResultOnce` (see the next
 section), the relayed dispatch on every other tab goes through that same gate as the leader's
-own local one — combining both gets you "only the leader polls" *and* "at most one tab ends up
+own local one — combining both gets you "only the leader polls" _and_ "at most one tab ends up
 notifying," consistently, regardless of which tab happened to detect the result.
 
 Only one `PendingTaskPoller` instance should exist per tab per store — a `storage` event never
 fires back in the tab that made the write, so a second poller instance sharing the same store
-in the *same* tab would never receive this relay (or the task-list sync above) at all. Starting
+in the _same_ tab would never receive this relay (or the task-list sync above) at all. Starting
 a second one while the first is still running warns once at runtime (via `logger` — see
 "Cancellation, retry backoff, and observability" above).
 
-If a relayed result could belong to a session that's ended in *this* tab by the time it
+If a relayed result could belong to a session that's ended in _this_ tab by the time it
 arrives (a different account signed in, a logout) and re-surfacing it here would be wrong,
 gate the receiving side with `acceptRelayedResult`:
 
@@ -237,8 +238,8 @@ const poller = new PendingTaskPoller({
 
 ## Cross-tab duplicate-toast dedupe (optional)
 
-`crossTabPollLeaderElection` above stops tabs from duplicating the *polling* itself, and a
-fencing check keeps a slow `check()` call from letting a *different* tab also reach `finalize()`
+`crossTabPollLeaderElection` above stops tabs from duplicating the _polling_ itself, and a
+fencing check keeps a slow `check()` call from letting a _different_ tab also reach `finalize()`
 for the same task after leadership has moved on mid-request. It doesn't guarantee `onResult`
 fires exactly once system-wide on its own, though — narrower windows remain: your own
 `claimResultOnce` callback awaiting something slow can itself let leadership move to another tab
@@ -247,7 +248,7 @@ before it resolves, which then independently completes the same task and calls i
 Web Locks API; and a lease write that silently fails (quota exceeded, private-mode Safari) can,
 rarely, let two tabs both believe they're leader. If several tabs can end up processing the same
 completion (any of those, or a forced re-login race), compose the included primitives via
-`claimResultOnce` — this also gates the *relayed* dispatch on every other tab (see above), so it
+`claimResultOnce` — this also gates the _relayed_ dispatch on every other tab (see above), so it
 gives you a true system-wide guarantee even with leader election on:
 
 ```ts
@@ -257,25 +258,22 @@ const notified = createTtlDedupeCache("my-app-pending-task-notified", 24 * 60 * 
 
 const poller = new PendingTaskPoller({
   // ...
-  claimResultOnce: (task) =>
-    withTabLock(`pending-task:${task.id}`, () =>
-      notified.claim(`${task.id}:${task.startedAt}`),
-    ),
+  claimResultOnce: (task) => withTabLock(`pending-task:${task.id}`, () => notified.claim(`${task.id}:${task.startedAt}`)),
 })
 ```
 
 Key the claim on `` `${task.id}:${task.startedAt}` ``, not on `task.id` alone. `id` is
 documented as "stable, globally-unique — re-adding a task with the same id replaces it" (see
-the `PendingTask.id` doc comment), so the *same* id can legitimately front several independent
+the `PendingTask.id` doc comment), so the _same_ id can legitimately front several independent
 runs over time (e.g. a user re-triggering the same paid action twice in one day). A cache
 keyed on bare `task.id` doesn't distinguish those runs: the TTL window has to outlive one
 run's own lifetime — a second tab can legitimately reach the same completion late (a slow
 `claimResultOnce` await, a frozen tab waking up, an expiry-time `finalCheckOnExpiry`), so the
 record must still be there when it does — which means it also spans across a second, unrelated
 run's completion: that second completion's `onResult`/relayed dispatch gets silently swallowed
-as if it were a duplicate of the first. `startedAt` is written fresh each time a *new* run is
+as if it were a duplicate of the first. `startedAt` is written fresh each time a _new_ run is
 added (see the `addTask` doc comment's replace-on-same-id note), while two tabs racing over
-the *same* run still see the same `startedAt` — so appending it narrows the dedupe to "this
+the _same_ run still see the same `startedAt` — so appending it narrows the dedupe to "this
 run" without reopening the cross-tab race this section exists to close.
 
 If whatever `claimResultOnce` gates on (or `metadata`/`data` fields in the tasks it tracks) can
@@ -295,7 +293,7 @@ store.getState().pruneTasksBy((task) => task.metadata?.userId === currentUserId)
 
 This package also has no opinion on login/logout more broadly — call `pruneTasksBy` after
 login and `clearAllTasks()` on explicit logout yourself, in whatever auth store you use.
-Skipping `clearAllTasks()` on a *forced* (e.g. 401) logout lets in-flight tasks (like a pending
+Skipping `clearAllTasks()` on a _forced_ (e.g. 401) logout lets in-flight tasks (like a pending
 payment confirmation) survive a quick re-login — that's an intentional choice to make, not a
 default this package bakes in.
 
@@ -316,13 +314,13 @@ clearResultRelay(resultRelayKey) // same key you passed, or `${storageKey}-resul
 A grab-bag of behaviors that are intentional trade-offs rather than bugs, collected here so
 they're documented somewhere instead of only in source comments:
 
-- **Wall-clock dependent** (`Date.now()` throughout). A clock stepping *backward* just delays
-  polling/lease-renewal/dedupe harmlessly. A clock jumping *forward* can make a batch of tasks
+- **Wall-clock dependent** (`Date.now()` throughout). A clock stepping _backward_ just delays
+  polling/lease-renewal/dedupe harmlessly. A clock jumping _forward_ can make a batch of tasks
   expire silently all at once and make leases/dedupe records expire early — fencing (see
-  "Cross-tab poll-leader election") still keeps leadership *correct* through that, just less
+  "Cross-tab poll-leader election") still keeps leadership _correct_ through that, just less
   available for a moment.
 - **Leadership rotates routinely, even in foreground tabs.** The lease's TTL defaults to 8s
-  (`pollTickMs` × 4), and it's only *renewed* by ticks that actually have a due task to check
+  (`pollTickMs` × 4), and it's only _renewed_ by ticks that actually have a due task to check
   — so with the default 10s `pollIntervalMs` the lease expires between checks anyway and the
   next due tick re-contends for it, in whichever tab gets there first. Backgrounded tabs make
   this much more pronounced: Chrome (and others) throttle a backgrounded tab's timers down to
@@ -354,7 +352,7 @@ they're documented somewhere instead of only in source comments:
 - **The Playwright suite (`test-e2e/`) only runs against Chromium** — Safari/WebKit's
   `navigator.locks` implementation is a known area where behavior could differ; add a WebKit
   project to `playwright.config.ts` if that matters for your users.
-- **This package is pre-1.0.** Per semver convention for `0.x`, a `minor` bump *may* include a
+- **This package is pre-1.0.** Per semver convention for `0.x`, a `minor` bump _may_ include a
   breaking change — 0.2.0 already exercises that by dropping the CommonJS build (see
   `CHANGELOG.md`), and future `0.x` releases make no stability guarantee either.
 

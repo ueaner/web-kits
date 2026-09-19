@@ -19,9 +19,7 @@ export interface PendingTaskStoreState<TType extends string = string> {
   clearAllTasks: () => void
 }
 
-export type PendingTaskStore<TType extends string = string> = UseBoundStore<
-  StoreApi<PendingTaskStoreState<TType>>
-> & {
+export type PendingTaskStore<TType extends string = string> = UseBoundStore<StoreApi<PendingTaskStoreState<TType>>> & {
   storageKey: string
   /**
    * True when the most recent write to this store's localStorage entry threw (quota exceeded,
@@ -81,9 +79,7 @@ export function isPendingTaskShape(value: unknown): value is PendingTask {
 }
 
 /** Parses the raw string a zustand-persist localStorage entry holds, tolerating garbage/foreign values. */
-export function parseTasksFromStorageValue<TType extends string = string>(
-  value: string | null,
-): PendingTask<TType>[] {
+export function parseTasksFromStorageValue<TType extends string = string>(value: string | null): PendingTask<TType>[] {
   if (!value) return []
   try {
     const parsed = JSON.parse(value) as unknown
@@ -104,9 +100,7 @@ export function parseTasksFromStorageValue<TType extends string = string>(
  *  SecurityError (see `safe-storage.ts`'s own doc comment) — reading it unguarded here would
  *  propagate straight out of every store mutator, `addTaskIfMissing`, and `flushBatch`, in a
  *  package that otherwise degrades every other localStorage access safely. */
-export function readPersistedTasks<TType extends string = string>(
-  storageKey: string,
-): PendingTask<TType>[] {
+export function readPersistedTasks<TType extends string = string>(storageKey: string): PendingTask<TType>[] {
   return parseTasksFromStorageValue<TType>(safeGetItem(storageKey))
 }
 
@@ -188,8 +182,7 @@ export function createPendingTaskStore<TType extends string = string>(
         // resurrect the stale persisted snapshot and discard whatever only lives in memory.
         // Once a write succeeds again, persisted and memory are back in sync, so mutators go
         // back to reading persisted first (to avoid resurrecting a task another tab removed).
-        const base = (): PendingTask<TType>[] =>
-          useStore.hasUnpersistedWrites ? get().tasks : readPersisted()
+        const base = (): PendingTask<TType>[] => (useStore.hasUnpersistedWrites ? get().tasks : readPersisted())
 
         return {
           tasks: [],

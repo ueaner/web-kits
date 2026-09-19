@@ -4,10 +4,7 @@
  * un-locked when the Web Locks API isn't available (older browsers, non-browser
  * environments, or insecure contexts).
  */
-export async function withTabLock<T>(
-  name: string,
-  operation: () => Promise<T> | T,
-): Promise<T> {
+export async function withTabLock<T>(name: string, operation: () => Promise<T> | T): Promise<T> {
   const locks = typeof navigator !== "undefined" ? navigator.locks : undefined
 
   if (!locks) {

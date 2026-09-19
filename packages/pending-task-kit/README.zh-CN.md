@@ -139,7 +139,9 @@ function PendingTaskNotifier() {
 ```ts
 const registry = {
   search: {
-    check: async (task, signal) => { /* ... */ },
+    check: async (task, signal) => {
+      /* ... */
+    },
     retryBackoffMs: (failureCount) => Math.min(1_000 * 2 ** failureCount, 60_000), // 有上限的指数退避
   },
 }
@@ -243,10 +245,7 @@ const notified = createTtlDedupeCache("my-app-pending-task-notified", 24 * 60 * 
 
 const poller = new PendingTaskPoller({
   // ...
-  claimResultOnce: (task) =>
-    withTabLock(`pending-task:${task.id}`, () =>
-      notified.claim(`${task.id}:${task.startedAt}`),
-    ),
+  claimResultOnce: (task) => withTabLock(`pending-task:${task.id}`, () => notified.claim(`${task.id}:${task.startedAt}`)),
 })
 ```
 

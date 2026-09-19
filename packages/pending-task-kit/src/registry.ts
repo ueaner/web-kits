@@ -43,9 +43,7 @@ export function createPendingTaskRegistryBinding<TType extends string = string>(
    */
   function addTaskIfMissing(task: PendingTask<TType>): void {
     const existsInMemory = store.getState().tasks.some((t) => t.id === task.id)
-    const existsPersisted =
-      !store.hasUnpersistedWrites &&
-      readPersistedTasks<TType>(store.storageKey).some((t) => t.id === task.id)
+    const existsPersisted = !store.hasUnpersistedWrites && readPersistedTasks<TType>(store.storageKey).some((t) => t.id === task.id)
     if (!existsInMemory && !existsPersisted) {
       addTask(task)
     }

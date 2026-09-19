@@ -46,9 +46,7 @@ test("only one of two real tabs calls check() when both race for leadership", as
   await context.close()
 })
 
-test("relays the leader's result to the other real tab's onResult via a genuine storage event", async ({
-  browser,
-}) => {
+test("relays the leader's result to the other real tab's onResult via a genuine storage event", async ({ browser }) => {
   const context = await browser.newContext()
   const pageA = await context.newPage()
   const pageB = await context.newPage()
@@ -70,29 +68,21 @@ test("relays the leader's result to the other real tab's onResult via a genuine 
   await expect
     .poll(
       async () => {
-        const [resultA, resultB] = [
-          await pageA.evaluate(() => window.lastResult),
-          await pageB.evaluate(() => window.lastResult),
-        ]
+        const [resultA, resultB] = [await pageA.evaluate(() => window.lastResult), await pageB.evaluate(() => window.lastResult)]
         return resultA !== null && resultB !== null
       },
       { timeout: 5_000 },
     )
     .toBe(true)
 
-  const [resultA, resultB] = [
-    await pageA.evaluate(() => window.lastResult),
-    await pageB.evaluate(() => window.lastResult),
-  ]
+  const [resultA, resultB] = [await pageA.evaluate(() => window.lastResult), await pageB.evaluate(() => window.lastResult)]
   expect(resultA).toMatchObject({ status: "success" })
   expect(resultB).toMatchObject({ status: "success" })
 
   await context.close()
 })
 
-test("a real tab takes over once the original leader tab closes without releasing its lease", async ({
-  browser,
-}) => {
+test("a real tab takes over once the original leader tab closes without releasing its lease", async ({ browser }) => {
   const context = await browser.newContext()
   const pageA = await context.newPage()
   const pageB = await context.newPage()

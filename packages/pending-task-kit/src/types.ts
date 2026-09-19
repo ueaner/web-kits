@@ -101,9 +101,7 @@ export interface PendingTaskHandler<TType extends string = string> {
   silentOnSuccess?: boolean
 }
 
-export type PendingTaskRegistry<TType extends string = string> = Partial<
-  Record<TType, PendingTaskHandler<TType>>
->
+export type PendingTaskRegistry<TType extends string = string> = Partial<Record<TType, PendingTaskHandler<TType>>>
 
 export interface PendingTaskResultEventDetail<TType extends string = string> {
   task: PendingTask<TType>

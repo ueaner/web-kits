@@ -42,8 +42,7 @@ export function usePendingTaskPoller<TType extends string = string>(
       ...optionsRef.current,
       onResult: (detail) => optionsRef.current.onResult?.(detail),
       onCheckError: (error, task) => optionsRef.current.onCheckError?.(error, task),
-      claimResultOnce: (task) =>
-        optionsRef.current.claimResultOnce ? optionsRef.current.claimResultOnce(task) : true,
+      claimResultOnce: (task) => (optionsRef.current.claimResultOnce ? optionsRef.current.claimResultOnce(task) : true),
       acceptRelayedResult: (detail) => optionsRef.current.acceptRelayedResult?.(detail) ?? true,
       onLeaderChange: (isLeader) => optionsRef.current.onLeaderChange?.(isLeader),
       onTick: (info) => optionsRef.current.onTick?.(info),

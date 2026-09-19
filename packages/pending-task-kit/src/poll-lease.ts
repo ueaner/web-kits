@@ -67,11 +67,7 @@ function readLease(storageKey: string): PollLeaseRecord | null {
   if (!raw) return null
   try {
     const parsed = JSON.parse(raw) as Partial<PollLeaseRecord>
-    if (
-      typeof parsed.ownerId !== "string" ||
-      typeof parsed.expiresAt !== "number" ||
-      typeof parsed.fence !== "number"
-    ) {
+    if (typeof parsed.ownerId !== "string" || typeof parsed.expiresAt !== "number" || typeof parsed.fence !== "number") {
       return null
     }
     return parsed as PollLeaseRecord
@@ -100,11 +96,7 @@ function writeLease(storageKey: string, lease: PollLeaseRecord): void {
  * so a leader that stops renewing (closed, crashed, or frozen) can't permanently block
  * every other owner from taking over. See `PollLeaseClaimer.release` for why this matters.
  */
-export function createPollLeaseClaimer(
-  storageKey: string,
-  ttlMs: number,
-  options?: PollLeaseClaimerOptions,
-): PollLeaseClaimer {
+export function createPollLeaseClaimer(storageKey: string, ttlMs: number, options?: PollLeaseClaimerOptions): PollLeaseClaimer {
   const logger = options?.logger ?? (typeof console !== "undefined" ? console : undefined)
   if (ttlMs <= 0 && logger) {
     // A non-positive TTL makes every claim expire before (or the instant) it's written, so

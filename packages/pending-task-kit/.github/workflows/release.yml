@@ -42,6 +42,7 @@ jobs:
       - run: pnpm run pub:check
       - run: pnpm run typecheck
       - run: pnpm run lint
+      - run: pnpm run format:check
       - run: pnpm run test
       # `--no-git-checks`: pnpm publish's own git-cleanliness/branch checks don't make sense
       # against CI's detached-HEAD tag checkout; the tag itself, checked out fresh above, is

@@ -38,9 +38,7 @@ describe("PendingTaskPoller", () => {
     await flush()
 
     expect(store.getState().tasks).toHaveLength(0)
-    expect(onResult).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "success", data: { href: "/x" } }),
-    )
+    expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ status: "success", data: { href: "/x" } }))
     poller.stop()
   })
 
@@ -280,9 +278,9 @@ describe("PendingTaskPoller", () => {
     })
 
     let shouldIntercept = true
-    const check = vi.fn().mockImplementation(() =>
-      shouldIntercept ? Promise.reject(new Error("SESSION_ENDED")) : Promise.resolve({ status: "success" }),
-    )
+    const check = vi
+      .fn()
+      .mockImplementation(() => (shouldIntercept ? Promise.reject(new Error("SESSION_ENDED")) : Promise.resolve({ status: "success" })))
     const onResult = vi.fn()
     const poller = new PendingTaskPoller({
       store,
@@ -580,10 +578,7 @@ describe("PendingTaskPoller", () => {
     // real elapsed time or pollLeaseTtlMs actually expiring. `fence: 2` mirrors what a genuine
     // rival claim would compute (this poller's own in-flight claim above was fence 1; a real
     // rival reading this now-expired-looking lease would bump it from there).
-    localStorage.setItem(
-      pollLeaseKey,
-      JSON.stringify({ ownerId: "other-tab", fence: 2, expiresAt: Date.now() + 10_000 }),
-    )
+    localStorage.setItem(pollLeaseKey, JSON.stringify({ ownerId: "other-tab", fence: 2, expiresAt: Date.now() + 10_000 }))
 
     resolveCheck({ status: "pending", progress: { percent: 42 } })
     await flush()
@@ -624,10 +619,7 @@ describe("PendingTaskPoller", () => {
     // Simulate another tab claiming the lease (fence 2) while this request is in flight, fully
     // processing it, and then releasing it — leaving the lease unheld again but with the fence
     // already moved on, exactly like `PollLeaseClaimer.release` writes it.
-    localStorage.setItem(
-      pollLeaseKey,
-      JSON.stringify({ ownerId: "other-tab", fence: 2, expiresAt: 0 }),
-    )
+    localStorage.setItem(pollLeaseKey, JSON.stringify({ ownerId: "other-tab", fence: 2, expiresAt: 0 }))
 
     resolveCheck({ status: "pending", progress: { percent: 42 } })
     await flush()
@@ -667,10 +659,7 @@ describe("PendingTaskPoller", () => {
     expect(check).toHaveBeenCalledTimes(1) // only task "a" so far — its check() is in flight
 
     // Simulate another tab taking over the lease while task "a"'s check() is still in flight.
-    localStorage.setItem(
-      pollLeaseKey,
-      JSON.stringify({ ownerId: "other-tab", fence: 2, expiresAt: Date.now() + 10_000 }),
-    )
+    localStorage.setItem(pollLeaseKey, JSON.stringify({ ownerId: "other-tab", fence: 2, expiresAt: Date.now() + 10_000 }))
 
     resolveCheckA({ status: "pending" })
     await flush()
@@ -737,10 +726,7 @@ describe("PendingTaskPoller", () => {
     expect(check).toHaveBeenCalledTimes(1) // only task "a" so far — its check() is in flight
 
     // Simulate another tab taking over the lease while task "a"'s check() is still in flight.
-    localStorage.setItem(
-      pollLeaseKey,
-      JSON.stringify({ ownerId: "other-tab", fence: 2, expiresAt: Date.now() + 10_000 }),
-    )
+    localStorage.setItem(pollLeaseKey, JSON.stringify({ ownerId: "other-tab", fence: 2, expiresAt: Date.now() + 10_000 }))
 
     rejectCheckA(new Error("boom"))
     await flush()
@@ -1209,10 +1195,7 @@ describe("PendingTaskPoller", () => {
     expect(onLeaderChange).toHaveBeenNthCalledWith(1, true)
 
     // Simulate another tab taking over the lease while this request is still in flight.
-    localStorage.setItem(
-      pollLeaseKey,
-      JSON.stringify({ ownerId: "other-tab", fence: 2, expiresAt: Date.now() + 10_000 }),
-    )
+    localStorage.setItem(pollLeaseKey, JSON.stringify({ ownerId: "other-tab", fence: 2, expiresAt: Date.now() + 10_000 }))
 
     resolveCheck({ status: "pending" })
     await flush()
@@ -1320,32 +1303,29 @@ describe("PendingTaskPoller", () => {
     ["NaN", Number.NaN],
     ["negative", -100],
     ["Infinity", Number.POSITIVE_INFINITY],
-  ])(
-    "falls back to pollIntervalMs when retryBackoffMs returns an invalid value (%s)",
-    async (_label, invalidValue) => {
-      const store = createPendingTaskStore({ storageKey: `engine-retry-backoff-invalid-${invalidValue}` })
-      store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+  ])("falls back to pollIntervalMs when retryBackoffMs returns an invalid value (%s)", async (_label, invalidValue) => {
+    const store = createPendingTaskStore({ storageKey: `engine-retry-backoff-invalid-${invalidValue}` })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
 
-      const check = vi.fn().mockRejectedValue(new Error("boom"))
-      const retryBackoffMs = vi.fn().mockReturnValue(invalidValue)
-      const registry: PendingTaskRegistry = { demo: { check, pollIntervalMs: 20, retryBackoffMs } }
-      const poller = new PendingTaskPoller({ store, registry, maxFailureCount: 10, pollTickMs: 15 })
+    const check = vi.fn().mockRejectedValue(new Error("boom"))
+    const retryBackoffMs = vi.fn().mockReturnValue(invalidValue)
+    const registry: PendingTaskRegistry = { demo: { check, pollIntervalMs: 20, retryBackoffMs } }
+    const poller = new PendingTaskPoller({ store, registry, maxFailureCount: 10, pollTickMs: 15 })
 
-      poller.forceCheckAll()
-      await flush()
-      expect(check).toHaveBeenCalledTimes(1) // failureCount now 1
+    poller.forceCheckAll()
+    await flush()
+    expect(check).toHaveBeenCalledTimes(1) // failureCount now 1
 
-      poller.start()
-      // Past the normal 20ms pollIntervalMs — an invalid backoff value must fall back to it,
-      // not hang forever (NaN) or retry immediately/constantly (negative).
-      await new Promise((resolve) => setTimeout(resolve, 80))
-      expect(check.mock.calls.length).toBeGreaterThanOrEqual(2)
+    poller.start()
+    // Past the normal 20ms pollIntervalMs — an invalid backoff value must fall back to it,
+    // not hang forever (NaN) or retry immediately/constantly (negative).
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(check.mock.calls.length).toBeGreaterThanOrEqual(2)
 
-      poller.stop()
-    },
-  )
+    poller.stop()
+  })
 
-  it("treats retryBackoffMs returning 0 the same as unset, not as \"always due\"", async () => {
+  it('treats retryBackoffMs returning 0 the same as unset, not as "always due"', async () => {
     // Regression test: the validation guard used to be `backoffMs >= 0`, letting `0` through
     // as a "valid" backoff — `interval = 0` makes `now - lastChecked >= 0` true the instant
     // it's checked, i.e. a hot retry loop every tick, exactly what the guard's own comment
