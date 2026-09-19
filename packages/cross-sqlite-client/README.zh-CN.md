@@ -278,7 +278,7 @@ await runMigrations(client, APP_MIGRATIONS);
 
 每次 `createMemoryAdapter()` 调用都是一个全新的独立实例，因此不同测试（或同一进程里的并行测试）不会共享状态。
 
-库自身的测试套件（`pnpm test`）覆盖迁移运行器、客户端生命周期和 React 绑定；CI（`.github/workflows/ci.yml`）在 Node 20/22 上运行 lint、typecheck、测试、构建和 `publint`。
+库自身的测试套件（`pnpm test`）覆盖迁移运行器、客户端生命周期和 React 绑定；CI（`.github/workflows/ci.yml`）在 Node 24 上运行 lint、typecheck、测试、构建和 `publint`（Node 24 是开发的最低版本要求，见 `package.json` 的 `engines`）。
 
 ## 已知限制
 
