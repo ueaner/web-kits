@@ -1,6 +1,6 @@
-import Sqlite from "@tauri-apps/plugin-sql";
-import type { BatchStatement, DbAdapter, DbAdapterConfig, DbClient } from "../core/types";
-import { DbCloseError, DbError, DbExecutionError, DbInitializationError } from "../core/errors";
+import Sqlite from "@tauri-apps/plugin-sql"
+import type { BatchStatement, DbAdapter, DbAdapterConfig, DbClient } from "../core/types"
+import { DbCloseError, DbError, DbExecutionError, DbInitializationError } from "../core/errors"
 
 /**
  * Tauri (@tauri-apps/plugin-sql) 适配器。
@@ -15,77 +15,77 @@ import { DbCloseError, DbError, DbExecutionError, DbInitializationError } from "
  * 任何错。
  */
 export function createTauriAdapter(): DbAdapter {
-  let db: Sqlite | null = null;
+  let db: Sqlite | null = null
   // 缓存进行中的 initialize()，避免并发调用各自跑一遍完整初始化流程并互相覆盖状态
-  let initPromise: Promise<DbClient> | null = null;
+  let initPromise: Promise<DbClient> | null = null
 
   function requireDb(): Sqlite {
     if (!db) {
-      throw new DbError("[Tauri DB] Database not initialized. Call initialize() first.");
+      throw new DbError("[Tauri DB] Database not initialized. Call initialize() first.")
     }
-    return db;
+    return db
   }
 
   const client: DbClient = {
     async select<T>(sql: string, params: unknown[] = []): Promise<T[]> {
-      const d = requireDb();
+      const d = requireDb()
       try {
-        return await d.select(sql, params);
+        return await d.select(sql, params)
       } catch (error) {
-        throw new DbExecutionError(sql, params, error);
+        throw new DbExecutionError(sql, params, error)
       }
     },
 
     async execute(sql: string, params: unknown[] = []): Promise<{ lastInsertId?: number; rowsAffected?: number }> {
-      const d = requireDb();
+      const d = requireDb()
       try {
-        const result = await d.execute(sql, params);
+        const result = await d.execute(sql, params)
         return {
           lastInsertId: result.lastInsertId,
           rowsAffected: result.rowsAffected,
-        };
+        }
       } catch (error) {
-        throw new DbExecutionError(sql, params, error);
+        throw new DbExecutionError(sql, params, error)
       }
     },
 
     async executeBatch(statements: BatchStatement[]): Promise<void> {
       for (const statement of statements) {
-        const sql = typeof statement === "string" ? statement : statement.sql;
-        const params = typeof statement === "string" ? [] : (statement.params ?? []);
-        await client.execute(sql, params);
+        const sql = typeof statement === "string" ? statement : statement.sql
+        const params = typeof statement === "string" ? [] : (statement.params ?? [])
+        await client.execute(sql, params)
       }
     },
 
     async close(): Promise<void> {
       // 先同步摘掉初始化缓存：init 进行中时等它落定，避免 close 返回后初始化才完成、
       // 留下一个没人持有句柄的连接
-      const pending = initPromise;
-      initPromise = null;
+      const pending = initPromise
+      initPromise = null
       if (pending) {
-        await pending.catch(() => {});
+        await pending.catch(() => {})
       }
       if (db) {
         try {
-          const current = db;
-          db = null; // 先清零再 close：并发的第二个 close() 看到空状态直接 no-op
-          const success = await current.close();
+          const current = db
+          db = null // 先清零再 close：并发的第二个 close() 看到空状态直接 no-op
+          const success = await current.close()
           if (!success) {
-            throw new DbCloseError();
+            throw new DbCloseError()
           }
         } catch (error) {
-          throw error instanceof DbCloseError ? error : new DbCloseError(error);
+          throw error instanceof DbCloseError ? error : new DbCloseError(error)
         }
       }
     },
-  };
+  }
 
   async function doInitialize(config: DbAdapterConfig): Promise<DbClient> {
     try {
-      db = await Sqlite.load(`sqlite:${config.name}.db`);
-      return client;
+      db = await Sqlite.load(`sqlite:${config.name}.db`)
+      return client
     } catch (error) {
-      throw new DbInitializationError(error);
+      throw new DbInitializationError(error)
     }
   }
 
@@ -94,13 +94,13 @@ export function createTauriAdapter(): DbAdapter {
 
     initialize(config: DbAdapterConfig): Promise<DbClient> {
       if (!initPromise) {
-        initPromise = doInitialize(config);
+        initPromise = doInitialize(config)
         // 失败后允许重试；调用方拿到的仍然是同一个会 reject 的 promise
         initPromise.catch(() => {
-          initPromise = null;
-        });
+          initPromise = null
+        })
       }
-      return initPromise;
+      return initPromise
     },
-  };
+  }
 }

@@ -1,7 +1,7 @@
-import sqlite3InitModule from "@sqlite.org/sqlite-wasm";
-import type { Database, Sqlite3Static } from "@sqlite.org/sqlite-wasm";
-import type { BatchStatement, DbAdapter, DbClient } from "../core/types";
-import { DbCloseError, DbError, DbExecutionError, DbInitializationError } from "../core/errors";
+import sqlite3InitModule from "@sqlite.org/sqlite-wasm"
+import type { Database, Sqlite3Static } from "@sqlite.org/sqlite-wasm"
+import type { BatchStatement, DbAdapter, DbClient } from "../core/types"
+import { DbCloseError, DbError, DbExecutionError, DbInitializationError } from "../core/errors"
 
 /**
  * 内存适配器（测试用）。基于 @sqlite.org/sqlite-wasm 官方支持的 Node 单线程用法
@@ -12,86 +12,86 @@ import { DbCloseError, DbError, DbExecutionError, DbInitializationError } from "
  * 实例（例如并行测试）。
  */
 export function createMemoryAdapter(): DbAdapter {
-  let sqlite3: Sqlite3Static | null = null;
-  let db: Database | null = null;
+  let sqlite3: Sqlite3Static | null = null
+  let db: Database | null = null
   // 缓存进行中的 initialize()，避免并发调用各自跑一遍完整初始化流程并互相覆盖状态
-  let initPromise: Promise<DbClient> | null = null;
+  let initPromise: Promise<DbClient> | null = null
 
   function requireDb(): Database {
     if (!db) {
-      throw new DbError("[Memory DB] Database not initialized. Call initialize() first.");
+      throw new DbError("[Memory DB] Database not initialized. Call initialize() first.")
     }
-    return db;
+    return db
   }
 
   const client: DbClient = {
     async select<T>(sql: string, params: unknown[] = []): Promise<T[]> {
-      const d = requireDb();
+      const d = requireDb()
       try {
-        return d.selectObjects(sql, params) as T[];
+        return d.selectObjects(sql, params) as T[]
       } catch (error) {
-        throw new DbExecutionError(sql, params, error);
+        throw new DbExecutionError(sql, params, error)
       }
     },
 
     async execute(sql: string, params: unknown[] = []): Promise<{ lastInsertId?: number; rowsAffected?: number }> {
-      const d = requireDb();
+      const d = requireDb()
       try {
-        d.exec({ sql, bind: params });
-        const rowsAffected = d.changes(false, false);
-        const lastInsertId = d.pointer !== undefined ? Number(sqlite3!.capi.sqlite3_last_insert_rowid(d.pointer)) : undefined;
-        return { lastInsertId, rowsAffected };
+        d.exec({ sql, bind: params })
+        const rowsAffected = d.changes(false, false)
+        const lastInsertId = d.pointer !== undefined ? Number(sqlite3!.capi.sqlite3_last_insert_rowid(d.pointer)) : undefined
+        return { lastInsertId, rowsAffected }
       } catch (error) {
-        throw new DbExecutionError(sql, params, error);
+        throw new DbExecutionError(sql, params, error)
       }
     },
 
     async executeBatch(statements: BatchStatement[]): Promise<void> {
-      const d = requireDb();
+      const d = requireDb()
       if (statements.length === 0) {
-        return;
+        return
       }
       if (statements.every((s) => typeof s === "string" || s.params === undefined || s.params.length === 0)) {
         // 无绑定参数：拼成一条 SQL 一次 exec 跑完。分隔符用 "\n;\n" 而不是 "\n"：
         // 用户语句可能不带结尾分号（逐条 execute 时无所谓，拼起来就 syntax error），
         // 也可能以 -- 行注释结尾（";" 直接跟在注释后会被注释掉）；多出的空语句 sqlite 会忽略
-        d.exec({ sql: statements.map((s) => (typeof s === "string" ? s : s.sql)).join("\n;\n") });
-        return;
+        d.exec({ sql: statements.map((s) => (typeof s === "string" ? s : s.sql)).join("\n;\n") })
+        return
       }
       for (const statement of statements) {
-        const sql = typeof statement === "string" ? statement : statement.sql;
-        const params = typeof statement === "string" ? [] : (statement.params ?? []);
-        await client.execute(sql, params);
+        const sql = typeof statement === "string" ? statement : statement.sql
+        const params = typeof statement === "string" ? [] : (statement.params ?? [])
+        await client.execute(sql, params)
       }
     },
 
     async close(): Promise<void> {
       // 先同步摘掉初始化缓存：init 进行中时等它落定，避免 close 返回后初始化才完成、
       // 留下一个没人持有句柄的连接
-      const pending = initPromise;
-      initPromise = null;
+      const pending = initPromise
+      initPromise = null
       if (pending) {
-        await pending.catch(() => {});
+        await pending.catch(() => {})
       }
       try {
-        db?.close();
+        db?.close()
       } catch (error) {
-        throw new DbCloseError(error);
+        throw new DbCloseError(error)
       } finally {
-        db = null;
+        db = null
       }
     },
-  };
+  }
 
   async function doInitialize(): Promise<DbClient> {
     try {
-      sqlite3 = await sqlite3InitModule();
-      db = new sqlite3.oo1.DB(":memory:", "c");
-      return client;
+      sqlite3 = await sqlite3InitModule()
+      db = new sqlite3.oo1.DB(":memory:", "c")
+      return client
     } catch (error) {
-      sqlite3 = null;
-      db = null;
-      throw new DbInitializationError(error);
+      sqlite3 = null
+      db = null
+      throw new DbInitializationError(error)
     }
   }
 
@@ -100,14 +100,14 @@ export function createMemoryAdapter(): DbAdapter {
 
     initialize(): Promise<DbClient> {
       if (!initPromise) {
-        initPromise = doInitialize();
+        initPromise = doInitialize()
         // 失败后允许重试；挂在缓存 promise 上而不是改写在它的 reject 路径里，
         // 调用方拿到的仍然是同一个会 reject 的 promise
         initPromise.catch(() => {
-          initPromise = null;
-        });
+          initPromise = null
+        })
       }
-      return initPromise;
+      return initPromise
     },
-  };
+  }
 }

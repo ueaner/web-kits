@@ -20,59 +20,59 @@ pnpm add cross-sqlite-client
 
 ```ts
 // appMigrations.ts
-import type { Migration } from "cross-sqlite-client";
+import type { Migration } from "cross-sqlite-client"
 
 export const APP_MIGRATIONS: Migration[] = [
   {
     version: 1,
     statements: [`CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY, title TEXT NOT NULL);`],
   },
-];
+]
 ```
 
 **2. 创建客户端，按当前平台选择适配器：**
 
 ```ts
 // appDb.ts
-import { createDbClient } from "cross-sqlite-client";
-import { createWebAdapter } from "cross-sqlite-client/adapters/web";
-import { createTauriAdapter } from "cross-sqlite-client/adapters/tauri";
-import { isTauri } from "@tauri-apps/api/core";
-import { APP_MIGRATIONS } from "./appMigrations";
+import { createDbClient } from "cross-sqlite-client"
+import { createWebAdapter } from "cross-sqlite-client/adapters/web"
+import { createTauriAdapter } from "cross-sqlite-client/adapters/tauri"
+import { isTauri } from "@tauri-apps/api/core"
+import { APP_MIGRATIONS } from "./appMigrations"
 
 export const clientPromise = createDbClient({
   name: "my-app", // 会成为 OPFS/Tauri 数据库文件名
   adapter: isTauri() ? createTauriAdapter() : createWebAdapter(),
   migrations: APP_MIGRATIONS,
-});
+})
 ```
 
 **3. 通过 React Provider 提供给组件树：**
 
 ```tsx
-import { DatabaseProvider } from "cross-sqlite-client/react";
-import { clientPromise } from "./appDb";
+import { DatabaseProvider } from "cross-sqlite-client/react"
+import { clientPromise } from "./appDb"
 
 function App() {
   return (
     <DatabaseProvider client={clientPromise}>
       <Router />
     </DatabaseProvider>
-  );
+  )
 }
 ```
 
 **4. 在任意组件里读取客户端：**
 
 ```tsx
-import { useDatabase } from "cross-sqlite-client/react";
+import { useDatabase } from "cross-sqlite-client/react"
 
 function TodoList() {
-  const { dbClient, isDbReady, isLoading, dbError } = useDatabase();
+  const { dbClient, isDbReady, isLoading, dbError } = useDatabase()
 
-  if (isLoading) return <Spinner />;
-  if (dbError) return <ErrorMessage error={dbError} />;
-  if (!isDbReady || !dbClient) return null;
+  if (isLoading) return <Spinner />
+  if (dbError) return <ErrorMessage error={dbError} />
+  if (!isDbReady || !dbClient) return null
 
   // dbClient.select<T>(sql, params?) / dbClient.execute(sql, params?) / dbClient.executeBatch(statements) / dbClient.close()
   // ...
@@ -95,17 +95,17 @@ function TodoList() {
 | `DbError` 及子类                                               | 见[错误](#错误)。                                                                                                                |
 
 ```ts
-import { createDbClient, runMigrations, defaultExecutor } from "cross-sqlite-client";
+import { createDbClient, runMigrations, defaultExecutor } from "cross-sqlite-client"
 ```
 
 每个适配器都实现的 `DbClient` 接口：
 
 ```ts
 interface DbClient {
-  select<T>(sql: string, params?: unknown[]): Promise<T[]>;
-  execute(sql: string, params?: unknown[]): Promise<{ lastInsertId?: number; rowsAffected?: number }>;
-  executeBatch(statements: BatchStatement[]): Promise<void>;
-  close(): Promise<void>;
+  select<T>(sql: string, params?: unknown[]): Promise<T[]>
+  execute(sql: string, params?: unknown[]): Promise<{ lastInsertId?: number; rowsAffected?: number }>
+  executeBatch(statements: BatchStatement[]): Promise<void>
+  close(): Promise<void>
 }
 ```
 
@@ -126,7 +126,7 @@ await createDbClient({
   pragmas: { foreign_keys: true, journal_mode: "WAL" },
   // 库告警/错误的诊断输出通道（默认 console）。
   logger: myLogger, // { warn(message, ...args), error(message, ...args) }
-});
+})
 ```
 
 ### 适配器
@@ -182,8 +182,8 @@ await createDbClient({
 
 ```ts
 interface Migration {
-  version: number;
-  statements: string[]; // 纯 DDL/DML 字符串，不带绑定参数
+  version: number
+  statements: string[] // 纯 DDL/DML 字符串，不带绑定参数
 }
 ```
 
@@ -196,9 +196,9 @@ interface Migration {
 
 ```ts
 interface MigrationOptions {
-  tableName?: string; // 版本表名，默认 "schema_version"；仅限合法标识符
-  executor?: MigrationExecutor; // 见下一节
-  logger?: Logger; // 覆盖 createDbClient 的 logger，仅作用于迁移阶段的诊断输出
+  tableName?: string // 版本表名，默认 "schema_version"；仅限合法标识符
+  executor?: MigrationExecutor // 见下一节
+  logger?: Logger // 覆盖 createDbClient 的 logger，仅作用于迁移阶段的诊断输出
 }
 ```
 
@@ -209,10 +209,10 @@ interface MigrationOptions {
 这个检查基于显式标记，而不是把执行器和 `defaultExecutor` 做引用相等比较：`transactionalExecutor` 通过 `Object.assign(fn, { requiresSingleConnection: true })` 携带标记。如果你也写了一个管理事务的自定义执行器，请用同样方式标记。完全不碰事务的执行器（例如只加日志）不需要这个标记，即使传给连接池适配器也不会被拒绝。
 
 ```ts
-import { runMigrations } from "cross-sqlite-client";
-import { transactionalExecutor } from "cross-sqlite-client/adapters/web";
+import { runMigrations } from "cross-sqlite-client"
+import { transactionalExecutor } from "cross-sqlite-client/adapters/web"
 
-await runMigrations(client, APP_MIGRATIONS, { executor: transactionalExecutor });
+await runMigrations(client, APP_MIGRATIONS, { executor: transactionalExecutor })
 ```
 
 ## Web 适配器细节
@@ -252,10 +252,10 @@ sqlite-wasm 的 `opfs` VFS 自带锁协议，因此两个标签页同时写同�
 | `DbTabLockError`                             | （仅 Web 适配器，`singleTabLock: true`）另一个标签页已持有数据库锁。                                   |
 
 ```ts
-import { DbTabLockError } from "cross-sqlite-client";
+import { DbTabLockError } from "cross-sqlite-client"
 
 try {
-  await clientPromise;
+  await clientPromise
 } catch (error) {
   if (error instanceof DbTabLockError) {
     // 展示「已在另一个标签页打开」而不是通用错误
@@ -268,11 +268,11 @@ try {
 测试时请用 `createMemoryAdapter()`，而不是 mock `DbClient`——它是真正的 SQLite 引擎（与 Web 适配器使用同一个 `@sqlite.org/sqlite-wasm` 的 Node/主线程版本），因此你的 SQL 会真实执行，行为与 Web 适配器一致，只是没有持久化：
 
 ```ts
-import { createMemoryAdapter } from "cross-sqlite-client/adapters/memory";
-import { runMigrations } from "cross-sqlite-client";
+import { createMemoryAdapter } from "cross-sqlite-client/adapters/memory"
+import { runMigrations } from "cross-sqlite-client"
 
-const client = await createMemoryAdapter().initialize({ name: "test" });
-await runMigrations(client, APP_MIGRATIONS);
+const client = await createMemoryAdapter().initialize({ name: "test" })
+await runMigrations(client, APP_MIGRATIONS)
 // 正常使用 client.select() / client.execute()
 ```
 

@@ -36,59 +36,59 @@ subpath.
 
 ```ts
 // appMigrations.ts
-import type { Migration } from "cross-sqlite-client";
+import type { Migration } from "cross-sqlite-client"
 
 export const APP_MIGRATIONS: Migration[] = [
   {
     version: 1,
     statements: [`CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY, title TEXT NOT NULL);`],
   },
-];
+]
 ```
 
 **2. Create a client, picking the adapter for the current platform:**
 
 ```ts
 // appDb.ts
-import { createDbClient } from "cross-sqlite-client";
-import { createWebAdapter } from "cross-sqlite-client/adapters/web";
-import { createTauriAdapter } from "cross-sqlite-client/adapters/tauri";
-import { isTauri } from "@tauri-apps/api/core";
-import { APP_MIGRATIONS } from "./appMigrations";
+import { createDbClient } from "cross-sqlite-client"
+import { createWebAdapter } from "cross-sqlite-client/adapters/web"
+import { createTauriAdapter } from "cross-sqlite-client/adapters/tauri"
+import { isTauri } from "@tauri-apps/api/core"
+import { APP_MIGRATIONS } from "./appMigrations"
 
 export const clientPromise = createDbClient({
   name: "my-app", // becomes the OPFS/Tauri database filename
   adapter: isTauri() ? createTauriAdapter() : createWebAdapter(),
   migrations: APP_MIGRATIONS,
-});
+})
 ```
 
 **3. Make it available to your React tree:**
 
 ```tsx
-import { DatabaseProvider } from "cross-sqlite-client/react";
-import { clientPromise } from "./appDb";
+import { DatabaseProvider } from "cross-sqlite-client/react"
+import { clientPromise } from "./appDb"
 
 function App() {
   return (
     <DatabaseProvider client={clientPromise}>
       <Router />
     </DatabaseProvider>
-  );
+  )
 }
 ```
 
 **4. Read it wherever you need the client:**
 
 ```tsx
-import { useDatabase } from "cross-sqlite-client/react";
+import { useDatabase } from "cross-sqlite-client/react"
 
 function TodoList() {
-  const { dbClient, isDbReady, isLoading, dbError } = useDatabase();
+  const { dbClient, isDbReady, isLoading, dbError } = useDatabase()
 
-  if (isLoading) return <Spinner />;
-  if (dbError) return <ErrorMessage error={dbError} />;
-  if (!isDbReady || !dbClient) return null;
+  if (isLoading) return <Spinner />
+  if (dbError) return <ErrorMessage error={dbError} />
+  if (!isDbReady || !dbClient) return null
 
   // dbClient.select<T>(sql, params?) / dbClient.execute(sql, params?) / dbClient.executeBatch(statements) / dbClient.close()
   // ...
@@ -111,17 +111,17 @@ function TodoList() {
 | `DbError` and subclasses                                       | See [Errors](#errors).                                                                                                                                                                                               |
 
 ```ts
-import { createDbClient, runMigrations, defaultExecutor } from "cross-sqlite-client";
+import { createDbClient, runMigrations, defaultExecutor } from "cross-sqlite-client"
 ```
 
 `DbClient`, the interface every adapter implements:
 
 ```ts
 interface DbClient {
-  select<T>(sql: string, params?: unknown[]): Promise<T[]>;
-  execute(sql: string, params?: unknown[]): Promise<{ lastInsertId?: number; rowsAffected?: number }>;
-  executeBatch(statements: BatchStatement[]): Promise<void>;
-  close(): Promise<void>;
+  select<T>(sql: string, params?: unknown[]): Promise<T[]>
+  execute(sql: string, params?: unknown[]): Promise<{ lastInsertId?: number; rowsAffected?: number }>
+  executeBatch(statements: BatchStatement[]): Promise<void>
+  close(): Promise<void>
 }
 ```
 
@@ -152,7 +152,7 @@ await createDbClient({
   pragmas: { foreign_keys: true, journal_mode: "WAL" },
   // Diagnostics channel for library warnings/errors (default: console).
   logger: myLogger, // { warn(message, ...args), error(message, ...args) }
-});
+})
 ```
 
 ### Adapters
@@ -225,8 +225,8 @@ Two things worth knowing about `DatabaseProvider`:
 
 ```ts
 interface Migration {
-  version: number;
-  statements: string[]; // plain DDL/DML strings, no bound parameters
+  version: number
+  statements: string[] // plain DDL/DML strings, no bound parameters
 }
 ```
 
@@ -260,9 +260,9 @@ interface Migration {
 
 ```ts
 interface MigrationOptions {
-  tableName?: string; // version table name, default "schema_version"; identifiers only
-  executor?: MigrationExecutor; // see the next section
-  logger?: Logger; // overrides createDbClient's logger for migration diagnostics
+  tableName?: string // version table name, default "schema_version"; identifiers only
+  executor?: MigrationExecutor // see the next section
+  logger?: Logger // overrides createDbClient's logger for migration diagnostics
 }
 ```
 
@@ -290,10 +290,10 @@ that just adds logging) doesn't need the marker and won't be rejected, even on
 a pooled-connection adapter.
 
 ```ts
-import { runMigrations } from "cross-sqlite-client";
-import { transactionalExecutor } from "cross-sqlite-client/adapters/web";
+import { runMigrations } from "cross-sqlite-client"
+import { transactionalExecutor } from "cross-sqlite-client/adapters/web"
 
-await runMigrations(client, APP_MIGRATIONS, { executor: transactionalExecutor });
+await runMigrations(client, APP_MIGRATIONS, { executor: transactionalExecutor })
 ```
 
 ## Web adapter details
@@ -359,10 +359,10 @@ accept an optional `cause`):
 | `DbTabLockError`                              | (Web adapter only, `singleTabLock: true`) Another tab already holds the database.                             |
 
 ```ts
-import { DbTabLockError } from "cross-sqlite-client";
+import { DbTabLockError } from "cross-sqlite-client"
 
 try {
-  await clientPromise;
+  await clientPromise
 } catch (error) {
   if (error instanceof DbTabLockError) {
     // show "already open in another tab" instead of a generic error
@@ -379,11 +379,11 @@ real and behaves the same as it would against the web adapter, just without
 persistence:
 
 ```ts
-import { createMemoryAdapter } from "cross-sqlite-client/adapters/memory";
-import { runMigrations } from "cross-sqlite-client";
+import { createMemoryAdapter } from "cross-sqlite-client/adapters/memory"
+import { runMigrations } from "cross-sqlite-client"
 
-const client = await createMemoryAdapter().initialize({ name: "test" });
-await runMigrations(client, APP_MIGRATIONS);
+const client = await createMemoryAdapter().initialize({ name: "test" })
+await runMigrations(client, APP_MIGRATIONS)
 // exercise client.select() / client.execute() as usual
 ```
 

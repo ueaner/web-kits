@@ -1,14 +1,14 @@
-import React, { createContext, useEffect, useState } from "react";
-import type { DbClient } from "../core/types";
+import React, { createContext, useEffect, useState } from "react"
+import type { DbClient } from "../core/types"
 
 export interface DatabaseContextType {
-  dbClient: DbClient | null;
-  isDbReady: boolean;
-  isLoading: boolean;
-  dbError: Error | null;
+  dbClient: DbClient | null
+  isDbReady: boolean
+  isLoading: boolean
+  dbError: Error | null
 }
 
-export const DatabaseContext = createContext<DatabaseContextType | undefined>(undefined);
+export const DatabaseContext = createContext<DatabaseContextType | undefined>(undefined)
 
 export interface DatabaseProviderProps {
   /**
@@ -27,46 +27,46 @@ export interface DatabaseProviderProps {
    * 已经被 close 过的 client——isDbReady 变成 true 但连接其实是死的。需要跟随组件生命周期
    * 关闭连接的调用方，应该在自己创建 client 的地方管理 close()，而不是依赖这里。
    */
-  client: DbClient | Promise<DbClient>;
-  children: React.ReactNode;
+  client: DbClient | Promise<DbClient>
+  children: React.ReactNode
 }
 
 export const DatabaseProvider: React.FC<DatabaseProviderProps> = ({ client, children }) => {
-  const [dbClient, setDbClient] = useState<DbClient | null>(null);
-  const [isDbReady, setIsDbReady] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-  const [dbError, setDbError] = useState<Error | null>(null);
+  const [dbClient, setDbClient] = useState<DbClient | null>(null)
+  const [isDbReady, setIsDbReady] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
+  const [dbError, setDbError] = useState<Error | null>(null)
 
   useEffect(() => {
-    let cancelled = false;
+    let cancelled = false
     // client prop 换了（比如重试）：先回到完全的未就绪状态——窗口期内不能把旧 client
     // 继续当作 isDbReady 暴露出去，否则消费方会把查询发到旧连接上
-    setDbClient(null);
-    setIsDbReady(false);
-    setIsLoading(true);
-    setDbError(null);
+    setDbClient(null)
+    setIsDbReady(false)
+    setIsLoading(true)
+    setDbError(null)
 
     Promise.resolve(client)
       .then((resolvedClient) => {
-        if (cancelled) return;
-        setDbClient(resolvedClient);
-        setIsDbReady(true);
+        if (cancelled) return
+        setDbClient(resolvedClient)
+        setIsDbReady(true)
       })
       .catch((error: unknown) => {
-        if (cancelled) return;
+        if (cancelled) return
         // error 不一定是 Error 实例（部分平台调用可能 reject 一个字符串或 DOMException）
-        setDbError(error instanceof Error ? error : new Error(String(error)));
+        setDbError(error instanceof Error ? error : new Error(String(error)))
       })
       .finally(() => {
-        if (!cancelled) setIsLoading(false);
-      });
+        if (!cancelled) setIsLoading(false)
+      })
 
     return () => {
-      cancelled = true;
-    };
-  }, [client]);
+      cancelled = true
+    }
+  }, [client])
 
-  const value: DatabaseContextType = { dbClient, isDbReady, isLoading, dbError };
+  const value: DatabaseContextType = { dbClient, isDbReady, isLoading, dbError }
 
-  return <DatabaseContext.Provider value={value}>{children}</DatabaseContext.Provider>;
-};
+  return <DatabaseContext.Provider value={value}>{children}</DatabaseContext.Provider>
+}
