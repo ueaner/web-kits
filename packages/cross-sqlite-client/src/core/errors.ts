@@ -3,15 +3,15 @@ export class DbError extends Error {
     message: string,
     public cause?: unknown,
   ) {
-    super(message);
-    this.name = "DbError";
+    super(message)
+    this.name = "DbError"
   }
 }
 
 export class DbInitializationError extends DbError {
   constructor(cause?: unknown) {
-    super("Failed to initialize database", cause);
-    this.name = "DbInitializationError";
+    super("Failed to initialize database", cause)
+    this.name = "DbInitializationError"
   }
 }
 
@@ -21,8 +21,8 @@ export class DbExecutionError extends DbError {
     public params: unknown[],
     cause?: unknown,
   ) {
-    super(`SQL execution failed: ${sql}`, cause);
-    this.name = "DbExecutionError";
+    super(`SQL execution failed: ${sql}`, cause)
+    this.name = "DbExecutionError"
   }
 }
 
@@ -37,16 +37,16 @@ export class DbMigrationError extends DbError {
     cause?: unknown,
   ) {
     // 底层不一定是 Error（可能是字符串、DOMException、promiser 的裸对象），message 里都带上
-    const detail = cause instanceof Error ? cause.message : cause === undefined ? "" : String(cause);
-    super(`Migration ${version} failed${detail ? `: ${detail.slice(0, 500)}` : ""}`, cause);
-    this.name = "DbMigrationError";
+    const detail = cause instanceof Error ? cause.message : cause === undefined ? "" : String(cause)
+    super(`Migration ${version} failed${detail ? `: ${detail.slice(0, 500)}` : ""}`, cause)
+    this.name = "DbMigrationError"
   }
 }
 
 export class DbCloseError extends DbError {
   constructor(cause?: unknown) {
-    super("Failed to close database", cause);
-    this.name = "DbCloseError";
+    super("Failed to close database", cause)
+    this.name = "DbCloseError"
   }
 }
 
@@ -57,7 +57,7 @@ export class DbCloseError extends DbError {
  */
 export class DbTabLockError extends DbError {
   constructor(cause?: unknown) {
-    super("Another browser tab/window already has this database open", cause);
-    this.name = "DbTabLockError";
+    super("Another browser tab/window already has this database open", cause)
+    this.name = "DbTabLockError"
   }
 }

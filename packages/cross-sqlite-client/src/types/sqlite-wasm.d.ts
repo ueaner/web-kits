@@ -26,7 +26,7 @@
 // https://github.com/rejozacharia/athenamobile/blob/main/src/types/sqlite-wasm.d.ts
 
 declare module "@sqlite.org/sqlite-wasm" {
-  export type TODO = any;
+  export type TODO = any
 
   /**
    * A function to be called when the SQLite3 module and worker APIs are done
@@ -38,10 +38,10 @@ declare module "@sqlite.org/sqlite-wasm" {
    *   convenient for certain usage patterns. The promiser v2 interface obviates
    *   the need for this callback.
    */
-  export type OnreadyFunction = (promiser: Promiser) => void;
+  export type OnreadyFunction = (promiser: Promiser) => void
 
   export type Sqlite3Worker1PromiserConfig = {
-    onready?: OnreadyFunction;
+    onready?: OnreadyFunction
     /**
      * A worker instance which loads `sqlite3-worker1.js`, or a functional
      * equivalent. Note that the promiser factory replaces the
@@ -49,14 +49,14 @@ declare module "@sqlite.org/sqlite-wasm" {
      * function, in which case this function is called to instantiate the
      * worker.
      */
-    worker?: Worker | (() => Worker);
+    worker?: Worker | (() => Worker)
     /** Function to generate unique message IDs */
-    generateMessageId?: (messageObject: TODO) => string;
+    generateMessageId?: (messageObject: TODO) => string
     /**
      * A `console.debug()` style function for logging information about Worker
      * messages.
      */
-    debug?: (...args: any[]) => void;
+    debug?: (...args: any[]) => void
     /**
      * A callback function that is called when a `message` event is received
      * from the worker, and the event is not handled by the proxy.
@@ -64,7 +64,7 @@ declare module "@sqlite.org/sqlite-wasm" {
      * @note This *should* ideally never happen, as the proxy aims to handle
      * all known message types.
      */
-    onunhandled?: (event: MessageEvent) => void;
+    onunhandled?: (event: MessageEvent) => void
     /**
      * Undocumented in the upstream API docs, but present in the implementation:
      * called for library-internal error conditions (e.g. an unhandled worker
@@ -72,8 +72,8 @@ declare module "@sqlite.org/sqlite-wasm" {
      * promiser's ready promise, so it cannot be used to detect e.g. the worker
      * script failing to load.
      */
-    onerror?: (...args: unknown[]) => void;
-  };
+    onerror?: (...args: unknown[]) => void
+  }
 
   /**
    * A db identifier string (returned by 'open') which tells the operation which
@@ -85,13 +85,13 @@ declare module "@sqlite.org/sqlite-wasm" {
    * of this API and cannot be used as a basis for anything useful beyond
    * its one intended purpose.
    */
-  export type DbId = string | undefined;
+  export type DbId = string | undefined
   export type Sqlite3Version = {
-    libVersion: string;
-    sourceId: string;
-    libVersionNumber: number;
-    downloadVersion: number;
-  };
+    libVersion: string
+    sourceId: string
+    libVersionNumber: number
+    downloadVersion: number
+  }
 
   // Message types and their corresponding arguments and results. Should be able to get better types for some of these (open, exec and stack) from the existing types, although the Promiser verions have minor differences
   export type PromiserMethods = {
@@ -103,7 +103,7 @@ declare module "@sqlite.org/sqlite-wasm" {
            * The db filename. [=":memory:" or "" (unspecified)]: TODO: See the
            * sqlite3.oo1.DB constructor for peculiarities and transformations
            */
-          filename?: string;
+          filename?: string
         } & {
           /**
            * Sqlite3_vfs name. Ignored if filename is ":memory:" or "". This may
@@ -115,44 +115,44 @@ declare module "@sqlite.org/sqlite-wasm" {
            * If both this argument and a URI-style argument are provided, which
            * one has precedence is unspecified.
            */
-          vfs?: string;
+          vfs?: string
         }
-      >;
+      >
       result: {
-        dbId: DbId;
+        dbId: DbId
         /** Db filename, possibly differing from the input */
-        filename: string;
+        filename: string
         /**
          * Indicates if the given filename resides in the known-persistent
          * storage
          */
-        persistent: boolean;
+        persistent: boolean
         /** Name of the underlying VFS */
-        vfs: string;
-      };
+        vfs: string
+      }
       /** @link https://sqlite.org/wasm/doc/trunk/api-worker1.md#method-close */
-    };
+    }
     close: {
-      args: { dbId?: DbId };
+      args: { dbId?: DbId }
       result: {
         /** Filename of closed db, or undefined if no db was closed */
-        filename: string | undefined;
-      };
+        filename: string | undefined
+      }
       /** @link https://sqlite.org/wasm/doc/trunk/api-worker1.md#method-config-get */
-    };
+    }
     "config-get": {
-      args: {};
+      args: {}
       result: {
-        dbID: DbId;
-        version: Sqlite3Version;
+        dbID: DbId
+        version: Sqlite3Version
         /** Indicates if BigInt support is enabled */
-        bigIntEnabled: boolean;
+        bigIntEnabled: boolean
         /** Indicates if opfs support is enabled */
-        opfsEnabled: boolean; //not documented on sqlie.org?
+        opfsEnabled: boolean //not documented on sqlie.org?
         /** Result of sqlite3.capi.sqlite3_js_vfs_list() */
-        vfsList: string[]; // is there a full list somewhere I can use?
-      };
-    };
+        vfsList: string[] // is there a full list somewhere I can use?
+      }
+    }
     /**
      * Interface for running arbitrary SQL. Wraps`oo1.DB.exec()` methods. And
      * supports most of its features as defined in
@@ -163,8 +163,8 @@ declare module "@sqlite.org/sqlite-wasm" {
      */
     exec: {
       args: {
-        sql: string;
-        dbId?: DbId;
+        sql: string
+        dbId?: DbId
         /**
          * At the end of the result set, the same event is fired with
          * (row=undefined, rowNumber=null) to indicate that the end of the
@@ -176,91 +176,91 @@ declare module "@sqlite.org/sqlite-wasm" {
            * Internally-synthesized message type string used temporarily for
            * worker message dispatching.
            */
-          type: string;
+          type: string
           /** Sqlilte3 VALUE */
-          row: TODO;
+          row: TODO
           /** 1-based index */
-          rowNumber: number;
-          columnNames: string[];
-        }) => void;
+          rowNumber: number
+          columnNames: string[]
+        }) => void
         /**
          * A single value valid as an argument for Stmt.bind(). This is only
          * applied to the first non-empty statement in the SQL which has any
          * bindable parameters. (Empty statements are skipped entirely.)
          */
-        bind?: Exclude<TODO, null>;
+        bind?: Exclude<TODO, null>
         /**
          * If truthy, `result.changeCount` is populated with the number of rows
          * changed by the SQL (via `sqlite3_total_changes()` before/after).
          * Added in 3.43.
          */
-        countChanges?: boolean;
+        countChanges?: boolean
         /**
          * If truthy, `result.lastInsertRowId` is populated with the result of
          * `sqlite3_last_insert_rowid()`, fetched once after the SQL runs. This
          * API has no idea whether the SQL contains an INSERT, so it's up to the
          * caller to only rely on this when it makes sense. Added in 3.50.0.
          */
-        lastInsertRowId?: boolean;
-        [key: string]: TODO; //
-      };
+        lastInsertRowId?: boolean
+        [key: string]: TODO //
+      }
       // result: { [key: string]: TODO };
       result: {
-        dbId: string;
-        sql: string;
+        dbId: string
+        sql: string
         // INSERT
-        bind?: Record<number, any>[];
-        changeCount?: number;
+        bind?: Record<number, any>[]
+        changeCount?: number
         /** Result of sqlite3_last_insert_rowid(), only set when requested via args.lastInsertRowId. */
-        lastInsertRowId?: bigint;
+        lastInsertRowId?: bigint
         // SELECT
-        resultRows?: Record<string, any>[];
-        returnValue?: string;
-        rowMode?: string;
-      };
-    };
-  };
+        resultRows?: Record<string, any>[]
+        returnValue?: string
+        rowMode?: string
+      }
+    }
+  }
 
   export type PromiserResponseSuccess<T extends keyof PromiserMethods> = {
     /** Type of the inbound message */
-    type: T;
+    type: T
     /** Operation dependent result */
-    result: PromiserMethods[T]["result"];
+    result: PromiserMethods[T]["result"]
     /** Same value, if any, provided by the inbound message */
-    messageId: string;
+    messageId: string
     /**
      * The id of the db which was operated on, if any, as returned by the
      * corresponding 'open' operation.
      */
-    dbId: DbId;
+    dbId: DbId
     // possibly other metadata ...
     /*
     WorkerReceivedTime: number
     WorkerRespondTime: number
     departureTime: number
      */
-  };
+  }
 
   export type PromiserResponseError = {
-    type: "error";
+    type: "error"
     /** Operation independent object */
     result: {
       /** Type of the triggereing operation */
-      operation: string;
+      operation: string
       /** Error Message */
-      message: string;
+      message: string
       /** The ErrorClass.name property from the thrown exception */
-      errorClass: string;
+      errorClass: string
       /** The message object which triggered the error */
-      input: object;
+      input: object
       /** _if available_ a stack trace array */
-      stack: TODO[];
-    };
+      stack: TODO[]
+    }
     /** Same value, if any, provided by the inbound message */
-    messageId: string;
-    dbId: DbId;
-  };
-  export type PromiserResponse<T extends keyof PromiserMethods> = PromiserResponseSuccess<T> | PromiserResponseError;
+    messageId: string
+    dbId: DbId
+  }
+  export type PromiserResponse<T extends keyof PromiserMethods> = PromiserResponseSuccess<T> | PromiserResponseError
 
   /**
    * The promiser's resolved value is always the success response. On failure the returned
@@ -275,15 +275,15 @@ declare module "@sqlite.org/sqlite-wasm" {
       messageType: T,
       /** The arguments for the message type */
       messageArguments: PromiserMethods[T]["args"],
-    ): Promise<PromiserResponseSuccess<T>>;
+    ): Promise<PromiserResponseSuccess<T>>
 
     <T extends keyof PromiserMethods>(message: {
       /** The type of the message */
-      type: T;
+      type: T
       /** The arguments for the message type */
-      args: PromiserMethods[T]["args"];
-    }): Promise<PromiserResponseSuccess<T>>;
-  };
+      args: PromiserMethods[T]["args"]
+    }): Promise<PromiserResponseSuccess<T>>
+  }
 
   /**
    * Factory for creating promiser instances.
@@ -305,9 +305,9 @@ declare module "@sqlite.org/sqlite-wasm" {
    * @link https://sqlite.org/wasm/doc/trunk/api-worker1.md#promiser.v2
    */
   export const sqlite3Worker1Promiser: {
-    (config?: Sqlite3Worker1PromiserConfig | OnreadyFunction): Promise<Promiser>;
-    defaultConfig: Sqlite3Worker1PromiserConfig;
-  };
+    (config?: Sqlite3Worker1PromiserConfig | OnreadyFunction): Promise<Promiser>
+    defaultConfig: Sqlite3Worker1PromiserConfig
+  }
 
   /**
    * Minimal subset of the real oo1.DB/Sqlite3Static surface, needed by
@@ -319,22 +319,22 @@ declare module "@sqlite.org/sqlite-wasm" {
    * that upstream already exports correctly.
    */
   export class Database {
-    constructor(filename?: string, flags?: string, vfs?: string);
-    pointer?: number;
-    exec(opts: { sql: string; bind?: TODO }): this;
-    selectObjects(sql: string, bind?: TODO): Record<string, TODO>[];
-    changes(total?: boolean, sixtyFour?: boolean): number;
-    close(): void;
+    constructor(filename?: string, flags?: string, vfs?: string)
+    pointer?: number
+    exec(opts: { sql: string; bind?: TODO }): this
+    selectObjects(sql: string, bind?: TODO): Record<string, TODO>[]
+    changes(total?: boolean, sixtyFour?: boolean): number
+    close(): void
   }
 
   export type Sqlite3Static = {
     oo1: {
-      DB: typeof Database;
-    };
+      DB: typeof Database
+    }
     capi: {
-      sqlite3_last_insert_rowid: (db: number) => bigint;
-    };
-  };
+      sqlite3_last_insert_rowid: (db: number) => bigint
+    }
+  }
 
-  export default function sqlite3InitModule(moduleArg?: TODO): Promise<Sqlite3Static>;
+  export default function sqlite3InitModule(moduleArg?: TODO): Promise<Sqlite3Static>
 }

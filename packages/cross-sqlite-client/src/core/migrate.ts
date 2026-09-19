@@ -1,22 +1,22 @@
-import { DbMigrationError } from "./errors";
-import type { DbClient, Logger, Migration, MigrationExecutor, MigrationOptions } from "./types";
+import { DbMigrationError } from "./errors"
+import type { DbClient, Logger, Migration, MigrationExecutor, MigrationOptions } from "./types"
 
 /** 表名/PRAGMA 名等要拼进 SQL 的标识符，只允许这个白名单，杜绝注入 */
-const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 export function assertIdentifier(value: string, what: string): void {
   if (!IDENTIFIER_RE.test(value)) {
     throw new Error(
       `${what} must match ${IDENTIFIER_RE} (letters, digits, underscore; not starting with a digit), got ${JSON.stringify(value)}.`,
-    );
+    )
   }
 }
 
 export const defaultExecutor: MigrationExecutor = async (db, migration, recordVersion) => {
   // 迁移语句不带绑定参数，web 适配器会把它们拼成一条 SQL 一次发给 worker，省掉逐条往返
-  await db.executeBatch(migration.statements);
-  await recordVersion();
-};
+  await db.executeBatch(migration.statements)
+  await recordVersion()
+}
 
 /**
  * 按 version 顺序执行尚未应用的迁移。默认每条语句独立执行，没有事务包裹；若某条迁移执行到
@@ -45,23 +45,23 @@ export async function runMigrations(
   migrations: Migration[],
   options?: MigrationOptions,
 ): Promise<void> {
-  const tableName = options?.tableName ?? "schema_version";
-  const executor = options?.executor ?? defaultExecutor;
-  const logger: Logger = options?.logger ?? console;
+  const tableName = options?.tableName ?? "schema_version"
+  const executor = options?.executor ?? defaultExecutor
+  const logger: Logger = options?.logger ?? console
 
-  assertIdentifier(tableName, "Migration tableName");
+  assertIdentifier(tableName, "Migration tableName")
 
   // version 必须从 1 开始且为正整数：currentVersion 未应用任何迁移时的初始值是 0，
   // 一个 version: 0 的迁移永远满足不了下面的 `migration.version > currentVersion`，会被静默忽略
-  const seen = new Set<number>();
+  const seen = new Set<number>()
   for (const migration of migrations) {
     if (!Number.isInteger(migration.version) || migration.version <= 0) {
-      throw new Error(`Migration version must be a positive integer, got ${migration.version}.`);
+      throw new Error(`Migration version must be a positive integer, got ${migration.version}.`)
     }
     if (seen.has(migration.version)) {
-      throw new Error(`Duplicate migration version ${migration.version}.`);
+      throw new Error(`Duplicate migration version ${migration.version}.`)
     }
-    seen.add(migration.version);
+    seen.add(migration.version)
   }
 
   await db.execute(
@@ -69,41 +69,41 @@ export async function runMigrations(
       version INTEGER PRIMARY KEY,
       applied_at INTEGER NOT NULL DEFAULT 0
     );`,
-  );
+  )
 
-  const rows = await db.select<{ version: number }>(`SELECT version FROM ${tableName};`);
-  const applied = new Set(rows.map((row) => row.version));
-  const currentVersion = Math.max(0, ...applied);
+  const rows = await db.select<{ version: number }>(`SELECT version FROM ${tableName};`)
+  const applied = new Set(rows.map((row) => row.version))
+  const currentVersion = Math.max(0, ...applied)
 
-  const maxProvided = migrations.reduce((max, migration) => Math.max(max, migration.version), 0);
+  const maxProvided = migrations.reduce((max, migration) => Math.max(max, migration.version), 0)
   if (currentVersion > maxProvided) {
     logger.warn(
       `[Migrations] Database schema version (${currentVersion}) is newer than the highest migration provided by this app (${maxProvided}). ` +
         "The database was likely created by a newer app version; no migrations were run.",
-    );
+    )
   }
 
   // 低于 currentVersion 但从未应用过的"迟到迁移"（比如旧库从 [1,2,5] 升级到补发了 3,4 的新包）。
   // 不自动补跑——乱序应用可能破坏 schema 演进假设；但必须告警而不是静默跳过
-  const holes = migrations.filter((migration) => migration.version < currentVersion && !applied.has(migration.version));
+  const holes = migrations.filter((migration) => migration.version < currentVersion && !applied.has(migration.version))
   if (holes.length > 0) {
     logger.warn(
       `[Migrations] ${holes.length} migration(s) with version below the current schema version (${currentVersion}) were never applied ` +
         `and are being skipped: ${holes.map((migration) => migration.version).join(", ")}. ` +
         "If these are hotfix migrations for an older release line, apply them deliberately (e.g. with a dedicated executor) instead of relying on the default runner.",
-    );
+    )
   }
 
-  const pending = migrations.filter((migration) => migration.version > currentVersion).sort((a, b) => a.version - b.version);
+  const pending = migrations.filter((migration) => migration.version > currentVersion).sort((a, b) => a.version - b.version)
 
   for (const migration of pending) {
     try {
       await executor(db, migration, async () => {
         // applied_at 从 JS 侧传入，避免依赖 SQLite 3.42+ 的 strftime('%s','subsec')
-        await db.execute(`INSERT INTO ${tableName} (version, applied_at) VALUES (?, ?);`, [migration.version, Date.now()]);
-      });
+        await db.execute(`INSERT INTO ${tableName} (version, applied_at) VALUES (?, ?);`, [migration.version, Date.now()])
+      })
     } catch (error) {
-      throw error instanceof DbMigrationError ? error : new DbMigrationError(migration.version, error);
+      throw error instanceof DbMigrationError ? error : new DbMigrationError(migration.version, error)
     }
   }
 }
