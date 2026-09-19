@@ -23,9 +23,6 @@
   "files": [
     "dist"
   ],
-  "publishConfig": {
-    "access": "public"
-  },
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",
@@ -36,6 +33,9 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsdown",
