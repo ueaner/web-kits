@@ -2,5 +2,6 @@
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
   "semi": false,
   "printWidth": 140,
+  "tabWidth": 2,
   "ignorePatterns": ["pnpm-lock.yaml", "dist"]
 }
