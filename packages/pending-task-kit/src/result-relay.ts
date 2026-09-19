@@ -7,12 +7,7 @@ import type { PendingTaskResultEventDetail, PendingTaskResultStatus } from "./ty
 // the relay write for an "expired" outcome (expiry is silent by design, never dispatched to
 // `onResult`/DOM listeners either). Accepting it here just means this parser doesn't need to
 // track that engine-side detail to stay correct — it validates against the type's own shape.
-const RESULT_STATUSES: readonly PendingTaskResultStatus[] = [
-  "success",
-  "failure",
-  "error",
-  "expired",
-]
+const RESULT_STATUSES: readonly PendingTaskResultStatus[] = ["success", "failure", "error", "expired"]
 
 function isResultStatus(value: unknown): value is PendingTaskResultStatus {
   return typeof value === "string" && (RESULT_STATUSES as readonly string[]).includes(value)
@@ -32,10 +27,7 @@ function isResultStatus(value: unknown): value is PendingTaskResultStatus {
  * `setItem` call, not a coalesced "latest value only" notification), so no result is dropped
  * by being overwritten before it's read.
  */
-export function writeResultRelay<TType extends string = string>(
-  storageKey: string,
-  detail: PendingTaskResultEventDetail<TType>,
-): void {
+export function writeResultRelay<TType extends string = string>(storageKey: string, detail: PendingTaskResultEventDetail<TType>): void {
   try {
     // `data` is a free-form, handler-supplied payload (type `unknown`) — JSON.stringify itself
     // (not just the localStorage write safeSetItem already guards) can throw on a circular
@@ -54,9 +46,7 @@ export function writeResultRelay<TType extends string = string>(
 
 /** Parses a `storage` event's `newValue` for the relay key above, tolerating garbage/foreign
  *  values the same way `parseTasksFromStorageValue` does for the task list itself. */
-export function parseResultRelay<TType extends string = string>(
-  value: string | null,
-): PendingTaskResultEventDetail<TType> | null {
+export function parseResultRelay<TType extends string = string>(value: string | null): PendingTaskResultEventDetail<TType> | null {
   if (!value) return null
   try {
     const parsed = JSON.parse(value) as Partial<PendingTaskResultEventDetail<TType>>

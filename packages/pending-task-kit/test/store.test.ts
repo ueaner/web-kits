@@ -40,9 +40,7 @@ describe("createPendingTaskStore", () => {
 
     store.getState().pruneTasksBy((task) => task.taskId === 1)
 
-    expect(store.getState().tasks).toEqual([
-      expect.objectContaining({ id: "a", taskId: 1 }),
-    ])
+    expect(store.getState().tasks).toEqual([expect.objectContaining({ id: "a", taskId: 1 })])
   })
 
   it("persists to the given localStorage key", () => {
@@ -223,9 +221,7 @@ describe("createPendingTaskStore", () => {
 
       const store = createPendingTaskStore({ storageKey })
 
-      expect(store.getState().tasks).toEqual([
-        expect.objectContaining({ id: "a", type: "demo", taskId: 1, startedAt: 123 }),
-      ])
+      expect(store.getState().tasks).toEqual([expect.objectContaining({ id: "a", type: "demo", taskId: 1, startedAt: 123 })])
     })
 
     it("hydrates a version-less entry as-is (robustness — zustand skips migrate when the field is absent)", () => {
@@ -243,9 +239,7 @@ describe("createPendingTaskStore", () => {
 
       const store = createPendingTaskStore({ storageKey })
 
-      expect(store.getState().tasks).toEqual([
-        expect.objectContaining({ id: "b", type: "demo", taskId: 2, startedAt: 456 }),
-      ])
+      expect(store.getState().tasks).toEqual([expect.objectContaining({ id: "b", type: "demo", taskId: 2, startedAt: 456 })])
     })
 
     it("hydrates a current-version entry normally", () => {

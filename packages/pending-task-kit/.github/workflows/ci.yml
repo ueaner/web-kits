@@ -28,6 +28,7 @@ jobs:
       - run: pnpm run pub:check
       - run: pnpm run typecheck
       - run: pnpm run lint
+      - run: pnpm run format:check
       - run: pnpm run test
       - name: Require a changeset for changes that should ship in a release
         # Dependabot PRs bump devDeps without a changeset by design — exempt the bot.

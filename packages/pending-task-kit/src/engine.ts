@@ -1,9 +1,4 @@
-import {
-  createPollLeaseClaimer,
-  generatePollOwnerId,
-  type PollLeaseClaimer,
-  type PollLeaseClaimResult,
-} from "./poll-lease"
+import { createPollLeaseClaimer, generatePollOwnerId, type PollLeaseClaimer, type PollLeaseClaimResult } from "./poll-lease"
 import { parseResultRelay, writeResultRelay } from "./result-relay"
 import { DEFAULT_STORAGE_KEY, DEFAULT_TTL_MS, parseTasksFromStorageValue, readPersistedTasks } from "./store"
 import type { PendingTaskStore } from "./store"
@@ -209,22 +204,12 @@ export class PendingTaskPoller<TType extends string = string> {
   private readonly options: Required<
     Omit<
       PendingTaskPollerOptions<TType>,
-      | "onResult"
-      | "onCheckError"
-      | "claimResultOnce"
-      | "acceptRelayedResult"
-      | "onLeaderChange"
-      | "onTick"
+      "onResult" | "onCheckError" | "claimResultOnce" | "acceptRelayedResult" | "onLeaderChange" | "onTick"
     >
   > &
     Pick<
       PendingTaskPollerOptions<TType>,
-      | "onResult"
-      | "onCheckError"
-      | "claimResultOnce"
-      | "acceptRelayedResult"
-      | "onLeaderChange"
-      | "onTick"
+      "onResult" | "onCheckError" | "claimResultOnce" | "acceptRelayedResult" | "onLeaderChange" | "onTick"
     >
 
   /** Stable for this instance's whole lifetime — e.g. one `PendingTaskPoller` construction per
@@ -729,7 +714,7 @@ export class PendingTaskPoller<TType extends string = string> {
         const interval =
           backoffMs !== undefined && Number.isFinite(backoffMs) && backoffMs > 0
             ? backoffMs
-            : handler.pollIntervalMs ?? this.options.defaultPollIntervalMs
+            : (handler.pollIntervalMs ?? this.options.defaultPollIntervalMs)
         const lastChecked = task.lastCheckedAt ?? task.startedAt
         const due = force || now - lastChecked >= interval
         const finalAttemptDone = this.finalCheckAttempted.has(task.id)
