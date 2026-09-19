@@ -4,6 +4,18 @@
 export type PendingTaskStatus = "pending" | "success" | "failure"
 
 /**
+ * Diagnostic-warning channel. Every place this package would otherwise `console.warn`
+ * (an oversized task list, an invalid `pollLeaseTtlMs`, a task whose `type` has no registered
+ * handler, a second poller instance sharing one store in the same tab) goes through this
+ * instead when one is provided — pass your own implementation to route those warnings into
+ * your telemetry/logging system. Defaults to `console`. A `warn` that throws is swallowed
+ * where the warning is best-effort bookkeeping, the same tolerance a broken `console` gets.
+ */
+export interface PendingTaskLogger {
+  warn(message: string): void
+}
+
+/**
  * The final way a task's tracking concluded, as reported to `onResult`:
  * - `success`/`failure` — `check()` gave a definite answer (mirrors `PendingTaskStatus`).
  * - `error` — `check()` itself kept throwing until `maxFailureCount` was reached; the engine

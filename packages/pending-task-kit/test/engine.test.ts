@@ -245,7 +245,7 @@ describe("PendingTaskPoller", () => {
       ttlMs: 500,
     })
 
-    const poller = new PendingTaskPoller({ store, registry: {} })
+    const poller = new PendingTaskPoller({ store, registry: {}, logger: { warn: vi.fn() } })
     poller.forceCheckAll()
     await flush()
 
@@ -257,7 +257,9 @@ describe("PendingTaskPoller", () => {
     const store = createPendingTaskStore({ storageKey: "engine-storage-clear" })
     store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
 
-    const poller = new PendingTaskPoller({ store, registry: {} })
+    // No-op logger: this test intentionally runs with `registry: {}`, which now warns once
+    // about the unregistered "demo" type — that behavior is covered by its own test below.
+    const poller = new PendingTaskPoller({ store, registry: {}, logger: { warn: vi.fn() } })
     poller.start()
     expect(store.getState().tasks).toHaveLength(1)
 
@@ -1440,6 +1442,85 @@ describe("PendingTaskPoller", () => {
     expect(check).toHaveBeenCalledTimes(2)
 
     poller.stop()
+  })
+
+  it("warns once per task type with no registered handler, not once per tick", async () => {
+    const store = createPendingTaskStore({ storageKey: "engine-unregistered-type" })
+    store.getState().addTask({ id: "a", type: "ghost", taskId: 1, startedAt: Date.now() })
+
+    const warn = vi.fn()
+    const poller = new PendingTaskPoller({ store, registry: {}, logger: { warn } })
+
+    poller.forceCheckAll()
+    await flush()
+    poller.forceCheckAll()
+    await flush()
+
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0]?.[0]).toContain('"ghost"')
+    // The task itself is untouched — it still just sits until its TTL expires.
+    expect(store.getState().tasks).toHaveLength(1)
+    poller.stop()
+  })
+
+  it("warns the second poller start()ed on the same store in the same tab", () => {
+    const store = createPendingTaskStore({ storageKey: "engine-duplicate-poller" })
+    const registry: PendingTaskRegistry = {}
+    const warnA = vi.fn()
+    const warnB = vi.fn()
+    const pollerA = new PendingTaskPoller({ store, registry, logger: { warn: warnA } })
+    const pollerB = new PendingTaskPoller({ store, registry, logger: { warn: warnB } })
+
+    pollerA.start()
+    expect(warnA).not.toHaveBeenCalled()
+
+    pollerB.start()
+    expect(warnB).toHaveBeenCalledTimes(1)
+    expect(warnB.mock.calls[0]?.[0]).toContain("engine-duplicate-poller")
+    expect(warnA).not.toHaveBeenCalled()
+
+    pollerB.stop()
+    pollerA.stop()
+  })
+
+  it("does not warn when the previous poller on the same store has already stopped", () => {
+    const store = createPendingTaskStore({ storageKey: "engine-duplicate-after-stop" })
+    const registry: PendingTaskRegistry = {}
+    const warnA = vi.fn()
+    const warnB = vi.fn()
+    const pollerA = new PendingTaskPoller({ store, registry, logger: { warn: warnA } })
+    const pollerB = new PendingTaskPoller({ store, registry, logger: { warn: warnB } })
+
+    pollerA.start()
+    pollerA.stop()
+    pollerB.start()
+
+    expect(warnB).not.toHaveBeenCalled()
+    pollerB.stop()
+  })
+
+  it("a throwing logger takes down neither a duplicate start() nor the tick that warns", async () => {
+    const store = createPendingTaskStore({ storageKey: "engine-throwing-logger" })
+    store.getState().addTask({ id: "a", type: "ghost", taskId: 1, startedAt: Date.now() })
+    const logger = {
+      warn: () => {
+        throw new Error("telemetry is down")
+      },
+    }
+    const pollerA = new PendingTaskPoller({ store, registry: {}, logger })
+    const pollerB = new PendingTaskPoller({ store, registry: {}, logger })
+
+    pollerA.start()
+    // Duplicate-poller warning fires into a broken channel — start() must still succeed.
+    expect(() => pollerB.start()).not.toThrow()
+    pollerB.stop()
+
+    // Unregistered-type warning into the same broken channel — the tick must complete and
+    // leave the task untouched.
+    pollerA.forceCheckAll()
+    await flush()
+    expect(store.getState().tasks).toHaveLength(1)
+    pollerA.stop()
   })
 })
 

@@ -2,6 +2,7 @@ export type {
   PendingTask,
   PendingTaskCheckResult,
   PendingTaskHandler,
+  PendingTaskLogger,
   PendingTaskMetadata,
   PendingTaskRegistry,
   PendingTaskResultEventDetail,
@@ -32,7 +33,7 @@ export {
 export type { PendingTaskPollerOptions } from "./engine"
 
 export { createPollLeaseClaimer, generatePollOwnerId } from "./poll-lease"
-export type { PollLeaseClaimer, PollLeaseClaimResult } from "./poll-lease"
+export type { PollLeaseClaimer, PollLeaseClaimerOptions, PollLeaseClaimResult } from "./poll-lease"
 
 export { clearResultRelay, parseResultRelay, writeResultRelay } from "./result-relay"
 

@@ -47,6 +47,9 @@ export function usePendingTaskPoller<TType extends string = string>(
       acceptRelayedResult: (detail) => optionsRef.current.acceptRelayedResult?.(detail) ?? true,
       onLeaderChange: (isLeader) => optionsRef.current.onLeaderChange?.(isLeader),
       onTick: (info) => optionsRef.current.onTick?.(info),
+      // An object channel rather than a bare callback, so it forwards method-by-method; the
+      // `?? console` fallback mirrors the engine's own default when no logger is passed.
+      logger: { warn: (message) => (optionsRef.current.logger ?? console).warn(message) },
     })
     poller.start()
 

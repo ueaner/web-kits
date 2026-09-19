@@ -1,7 +1,7 @@
 import { create, type StoreApi, type UseBoundStore } from "zustand"
 import { createJSONStorage, persist } from "zustand/middleware"
 import { safeGetItem } from "./safe-storage"
-import type { PendingTask } from "./types"
+import type { PendingTask, PendingTaskLogger } from "./types"
 
 export const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000
 export const DEFAULT_STORAGE_KEY = "pending-tasks"
@@ -58,12 +58,15 @@ export interface CreatePendingTaskStoreOptions {
    * is persisted as a single JSON blob on every change — a very large list risks the ~5MB
    * per-origin localStorage quota and makes every write (and every other tab's `storage`-event
    * re-parse) slower, but nothing previously surfaced that risk until it actually broke. Once
-   * the count crosses this threshold, `console.warn`s exactly once for this store's lifetime
+   * the count crosses this threshold, warns exactly once for this store's lifetime
    * (never again after, even if the count keeps climbing) — not a hard limit, tasks keep being
    * tracked normally either way. Defaults to `DEFAULT_TASK_LIST_WARN_THRESHOLD` (200); set to
    * `Infinity` to disable if your app genuinely needs to track more.
    */
   taskListWarnThreshold?: number
+  /** Diagnostic-warning channel for this store (currently just the `taskListWarnThreshold`
+   *  warning). Defaults to `console` — see `PendingTaskLogger`. */
+  logger?: PendingTaskLogger
 }
 
 export function isPendingTaskShape(value: unknown): value is PendingTask {
@@ -127,6 +130,7 @@ export function createPendingTaskStore<TType extends string = string>(
     options.taskListWarnThreshold === undefined || Number.isNaN(options.taskListWarnThreshold)
       ? DEFAULT_TASK_LIST_WARN_THRESHOLD
       : options.taskListWarnThreshold
+  const logger: PendingTaskLogger = options.logger ?? console
   const readPersisted = (): PendingTask<TType>[] => readPersistedTasks<TType>(storageKey)
 
   // Fires at most once per store instance — see `taskListWarnThreshold`'s doc comment.
@@ -137,9 +141,9 @@ export function createPendingTaskStore<TType extends string = string>(
     hasWarnedAboutTaskListSize = true
     try {
       // Wrapped in its own try/catch, entirely separate from the setState try/catch below: a
-      // `console` that's missing entirely, or a `console.warn` override that itself throws,
-      // must not prevent the actual task-list write that follows this.
-      console.warn(
+      // logger whose `warn` itself throws (or a `console` that's missing entirely) must not
+      // prevent the actual task-list write that follows this.
+      logger.warn(
         `pending-task-kit: tracking ${length} tasks for storageKey "${storageKey}", past the ` +
           `soft warning threshold of ${taskListWarnThreshold}. The whole list is persisted as a ` +
           "single localStorage entry on every change — a very large list risks the ~5MB per-origin " +
@@ -148,7 +152,7 @@ export function createPendingTaskStore<TType extends string = string>(
           "this many.",
       )
     } catch {
-      // See the comment above — degrade silently rather than let a broken console take down a
+      // See the comment above — degrade silently rather than let a broken logger take down a
       // write.
     }
   }
@@ -210,6 +214,14 @@ export function createPendingTaskStore<TType extends string = string>(
         name: storageKey,
         storage: createJSONStorage(() => localStorage),
         partialize: (state) => ({ tasks: state.tasks }),
+        // Versioned from 0.3.0 on. `migrate` is a deliberate pass-through for anything older
+        // (reported to it as version 0 — i.e. entries written before versioning existed): the
+        // persisted shape hasn't changed, so old data is already in the current shape, and
+        // without a `migrate` zustand would *discard* a version-mismatched entry outright —
+        // silently wiping every pre-upgrade user's task list on load. Bump `version` and add a
+        // real migration branch here only when the shape itself actually changes.
+        version: 1,
+        migrate: (persistedState) => persistedState as { tasks: PendingTask<TType>[] },
         // The one path that bypasses `writeTasks` (and so its size-warning check) entirely:
         // zustand's own initial rehydrate-from-storage on store creation calls its internal
         // `setState` directly, not through `writeTasks`. Without this, an app that starts up
