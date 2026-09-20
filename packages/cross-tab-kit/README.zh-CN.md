@@ -104,7 +104,8 @@ const notified = createTtlDedupeCache("my-app:notified-once", 24 * 60 * 60 * 100
 })
 
 // claim() 是纯粹的不加锁"读-改-写"——需要跨标签页原子时用 withTabLock 包一层。
-if (await withTabLock("my-app:notified-once", () => notified.claim(orderId))) {
+// 等待给短上限:认领是微秒级的工作,等得久说明持有者卡死了,而不是忙。
+if (await withTabLock("my-app:notified-once", () => notified.claim(orderId), { waitTimeoutMs: 2_000 })) {
   showToast("Order confirmed")
 }
 
@@ -114,27 +115,36 @@ if (notified.has(orderId)) disableResendButton()
 
 ## 核心概念
 
-- **`withTabLock(name, operation, options?)`** —— 把 `operation` 包在一个具名的
+- **`withTabLock(name, operation, options)`** —— 把 `operation` 包在一个具名的
   [Web Locks API](https://developer.mozilla.org/zh-CN/docs/Web/API/Web_Locks_API) 锁
   (`navigator.locks`)里执行,保证同一时刻只有一个打开的标签页在跑它。Web Locks 不可
-  用时(老浏览器、非安全上下文)退化为直接、不加锁地执行。`options.signal` 可以中止
-  *等待*锁的过程(以 `AbortError` 拒绝);`options.timeoutMs` 在 `operation` 迟迟不了
-  结时以 `TimeoutError` 拒绝、释放锁并 abort `ctx.timeoutSignal`——操作本身无法被取消
-  (JS 没法中断任意代码),所以超时之后可能有两个标签页短暂地同时处于 `operation` 里,
-  副作用要幂等。
+  用时(老浏览器、非安全上下文)退化为直接、不加锁地执行。`options` 是必传的,因为
+  其中有 `waitTimeoutMs`——*等待*锁的上限(超时以 `TimeoutError` 拒绝;显式传
+  `Infinity` 表示无限等)。`options.signal` 同样可以中止等待(以 `AbortError` 拒绝)。
+  `options.timeoutMs` 是另一个独立的超时,管的是 _operation_:迟迟不了结时以
+  `TimeoutError` 拒绝、释放锁并 abort `ctx.timeoutSignal`——操作本身无法被取消(JS
+  没法中断任意代码),所以超时之后可能有两个标签页短暂地同时处于 `operation` 里,副
+  作用要幂等。
 - **`tryWithTabLock(name, operation, options?)`** —— 拿不到就跳过的版本:结果是
-  `{ acquired: true, value }` 或 `{ acquired: false }`,而不是排在持有者后面。无 Web
-  Locks 的降级路径上没有锁可争,一律报 `acquired: true`。
+  `{ acquired: true, value }` 或 `{ acquired: false }`,而不是排在持有者后面(它从不
+  排队,所以没有 `waitTimeoutMs`)。无 Web Locks 的降级路径上没有锁可争,一律报
+  `acquired: true`。
 - **`createLeadershipLoop(storageKey, ttlMs, onLeadership, options?)`** —— 定时器驱
   动的选主,用于持续持有的角色(轮询、共享连接)。`onLeadership(ctx)` 每段任期触发
-  一次;`ctx = { fence, signal, isStillLeader() }`。返回 `stop()` 函数。
+  一次;`ctx = { fence, signal, isStillLeader() }`。返回 `stop()` 函数。某一轮 tick
+  在 `waitTimeoutMs`(默认 `ttlMs`)内拿不到仲裁锁会失败并打日志——下一轮 tick 自动
+  自愈。
 - **`createLeadershipGate(storageKey, ttlMs, options?)`** —— 同一套机制的无定时器版
-  本:`acquire()` 返回 `Tenure`(`{ fence, signal, isStillValid() }`)或 null;
-  `release()` 是同步、尽力而为的 tombstone。
+  本:`acquire()` 返回 `Tenure`(`{ fence, signal, isStillValid() }`)或 null,等待仲
+  裁锁超过 `waitTimeoutMs` 时以 `TimeoutError` 拒绝;`release()` 是同步、尽力而为的
+  tombstone。
 - **`createTtlDedupeCache(storageKey, ttlMs, options?)`** —— 基于 localStorage、TTL
   过期的"只认领一次"缓存:`claim(id)` 在 TTL 窗口内首次认领返回 `true`,重复返回
   `false`(窗口从首次认领起算、固定不变——重复认领不续期)。`has(id)` 只查询不认领;
   `clear()` 清空全部。`options.maxEntries` 给缓存加上限,超出时按认领时间最旧逐出。
+- **配置错误快速失败**:`ttlMs` / `renewIntervalMs` / `maxEntries` 及各超时选项非法
+  时在构造期或调用时 throw `RangeError`——app 首次启动或首个测试就会暴露——而不是
+  让协调悄悄退化。
 - **`Logger`** —— 包里所有 `options.logger` 都是最小的 `{ warn(message): void }`,
   `console` 或你现有的任何 logger 都可以直接赋值。
 
@@ -166,6 +176,23 @@ localStorage 的租约:`claim(ownerId)` 返回 `{ leader: true, fence }` 或
 共用的一层很薄的 localStorage 封装:无论存储完全不可用(SSR、没有 `window`)还是调
 用本身抛错(配额超限、Safari 隐私模式、存储被禁用),都优雅降级而不是抛出异常。
 
+## 注意事项
+
+- **怎么选 `waitTimeoutMs`**:短临界区(一次认领、一次比较-写入)给短上限——微秒级
+  的工作等很久,说明持有者卡死了而不是忙,短超时(几百毫秒到几秒)让它以
+  `TimeoutError` 暴露,而不是拖死所有标签页里的同名等待者。真要排队的场景,显式传
+  `Infinity`——这是"愿意一直等"的刻意写法。
+- **`operation` 里做网络请求**:必须配合 `timeoutMs`,并把 `ctx.timeoutSignal` 传给
+  `fetch`——否则挂起的请求会一直占着锁直到标签页死亡,其它标签页的等待者各自撞上
+  自己的 `waitTimeoutMs`。
+- **禁止嵌套同名锁**:Web Locks 不可重入,`withTabLock("a", () => withTabLock("a", ...))`
+  (直接或间接)必然死锁——表现为内层调用的 `waitTimeoutMs` 超时,错误消息会指认这
+  是嵌套调用导致的。需要多把锁名时,所有代码路径用同一个固定顺序获取。
+- **构造参数会被校验**:`ttlMs`、`renewIntervalMs`、`maxEntries` 和各超时选项取非法
+  值(`0`、`NaN`、在不允许无界的场合传 `Infinity`、`renewIntervalMs >= ttlMs`)时
+  throw `RangeError`——续租间隔不小于 TTL 的 loop 会让租约在两次续租之间过期,
+  leadership 在标签页之间反复抖动。
+
 ## 运行环境说明
 
 - **Web Locks 不可用**:`withTabLock` 退化成不加锁直接执行 `operation`——每个标签页
@@ -174,11 +201,12 @@ localStorage 的租约:`claim(ownerId)` 返回 `{ leader: true, fence }` 或
   证它自愈,而不是出错。
 - **Web Locks 的死锁与冻结陷阱**:Web Locks 不可重入——在同一个锁名下嵌套
   `withTabLock`(直接或间接)必然死锁;跨代码路径以不一致的顺序获取两个锁名同样会死
-  锁。这两种情况 `timeoutMs` 都救不了:它只约束 `operation` 阶段,管不到等锁阶段——等
-  锁本身需要可中止的话请用 `signal`。被冻结在前进/后退缓存(bfcache)里的标签页也会一
-  直持有它已获得的锁,直到浏览器销毁该页面,期间等待同名锁的其它标签页全被卡住。基于
-  租约的选主 API 在设计上免疫冻结场景(租约会自己过期),但长耗时的 `withTabLock` 临界
-  区不行。
+  锁。这两种情况下等待仍然有界:`waitTimeoutMs` 会让等待者超时(本 tab 自己持有该锁
+  时错误消息会指认嵌套调用),`signal` 让等待可中止——光靠 `timeoutMs` 救不了,因为它
+  只约束 `operation` 阶段,管不到等锁阶段。被冻结在前进/后退缓存(bfcache)里的标签页
+  会一直持有它已获得的锁,直到浏览器销毁该页面,期间等待同名锁的其它标签页全被卡住
+  ——这正是 `waitTimeoutMs` 兜底的情形。基于租约的选主 API 在设计上免疫冻结场景(租
+  约会自己过期),但长耗时的 `withTabLock` 临界区不行。
 - **localStorage 不可用或抛错**:包里每个原语都会优雅降级。写不进去的租约或去重缓存
   仍然会返回结果,只是失去了跨标签页保证——跟 `withTabLock` 自己的退化是同一种"协调
   变成尽力而为,而不是直接出错"的取舍。

@@ -99,14 +99,13 @@ describe("createPollLeaseClaimer", () => {
     expect(lease.claim("owner-b")).toEqual({ leader: true, fence: 1 })
   })
 
-  it("warns on a NaN or infinite ttlMs, which would silently break election", () => {
-    const warn = vi.fn()
-
-    createPollLeaseClaimer("test-lease-nan", NaN, { logger: { warn } })
-    createPollLeaseClaimer("test-lease-inf", Infinity, { logger: { warn } })
-
-    expect(warn).toHaveBeenCalledTimes(2)
-    expect(warn.mock.calls[0]?.[0]).toContain("ttlMs")
+  it("throws RangeError at construction on an invalid ttlMs (NaN, Infinity, zero, negative)", () => {
+    // Misconfiguration, not a runtime condition: an invalid TTL used to merely warn while
+    // election silently broke — now it fails fast, on first construction.
+    expect(() => createPollLeaseClaimer("test-lease-nan", NaN)).toThrow(RangeError)
+    expect(() => createPollLeaseClaimer("test-lease-inf", Infinity)).toThrow(RangeError)
+    expect(() => createPollLeaseClaimer("test-lease-zero", 0)).toThrow(RangeError)
+    expect(() => createPollLeaseClaimer("test-lease-neg", -1)).toThrow(RangeError)
   })
 
   it("treats a throwing localStorage read as 'no lease' (read failure degrades to unheld)", () => {
@@ -140,40 +139,6 @@ describe("createPollLeaseClaimer", () => {
     const leaseB = createPollLeaseClaimer("lease-b", 10_000)
     expect(leaseA.claim("owner-1")).toEqual({ leader: true, fence: 1 })
     expect(leaseB.claim("owner-2")).toEqual({ leader: true, fence: 1 })
-  })
-
-  it("routes the non-positive ttlMs warning through a custom logger instead of console", () => {
-    const warn = vi.fn()
-    const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined)
-
-    createPollLeaseClaimer("test-lease-bad-ttl", 0, { logger: { warn } })
-
-    expect(warn).toHaveBeenCalledTimes(1)
-    expect(warn.mock.calls[0]?.[0]).toContain("ttlMs")
-    expect(consoleWarnSpy).not.toHaveBeenCalled()
-    consoleWarnSpy.mockRestore()
-  })
-
-  it("warns via console by default on a non-positive ttlMs", () => {
-    const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined)
-
-    createPollLeaseClaimer("test-lease-bad-ttl-default", -1)
-
-    expect(consoleWarnSpy).toHaveBeenCalledTimes(1)
-    expect(consoleWarnSpy.mock.calls[0]?.[0]).toContain("ttlMs")
-    consoleWarnSpy.mockRestore()
-  })
-
-  it("a throwing logger doesn't break claimer creation on a non-positive ttlMs", () => {
-    expect(() =>
-      createPollLeaseClaimer("test-lease-throwing-logger", 0, {
-        logger: {
-          warn: () => {
-            throw new Error("telemetry is down")
-          },
-        },
-      }),
-    ).not.toThrow()
   })
 })
 

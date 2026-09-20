@@ -72,6 +72,31 @@ describe("createLeadershipGate", () => {
     }
   })
 
+  it("isStillValid releases the zombie lease it silently re-claims when its own tenure expired unnoticed", async () => {
+    // Regression: if nobody else claims the lease while this tenure runs past ttlMs, the
+    // re-claim inside isStillValid() looks identical to "claim an unheld lease" — it silently
+    // writes a brand-new live lease under this same tab's ownerId with a bumped fence. Without
+    // releasing it, that self-written lease would block every other tab for up to another full
+    // ttlMs, even though this tab already gave up (isStillValid() reports false).
+    const world = createTabWorld()
+    try {
+      const gate = createLeadershipGate("gate-zombie", 1_000)
+      const gateB = createLeadershipGate("gate-zombie", 1_000)
+      const tenure = await gate.acquire()
+      expect(tenure?.fence).toBe(1)
+
+      await world.advance(1_000) // the tenure's own lease lapses with nobody else polling
+      await expect(tenure?.isStillValid()).resolves.toBe(false)
+
+      // No TTL wait needed: the zombie lease isStillValid() would otherwise have left behind
+      // was released immediately, so another tab can claim right away.
+      const tenureB = await gateB.acquire()
+      expect(tenureB).not.toBeNull()
+    } finally {
+      world.cleanup()
+    }
+  })
+
   it("aborts the tenure signal when a storage event shows the lease changing hands", async () => {
     const gate = createLeadershipGate("gate-stolen", 10_000)
     const tenure = await gate.acquire()
@@ -98,6 +123,25 @@ describe("createLeadershipGate", () => {
     )
 
     expect(tenure?.signal.aborted).toBe(false)
+  })
+
+  it("ignores a storage event whose record has a different ownerId but is otherwise structurally garbage", async () => {
+    // Regression: the storage-event listener used to accept any record with a differing
+    // ownerId as proof of loss, even with a non-finite fence/expiresAt that claim()'s own
+    // validator would reject as garbage — a malformed write could falsely evict this tab from
+    // leadership when a real re-check would not have.
+    const gate = createLeadershipGate("gate-garbage-rival", 10_000)
+    const tenure = await gate.acquire()
+
+    const garbageRecord = JSON.stringify({ ownerId: "someone-else", fence: "not-a-number", expiresAt: Date.now() + 10_000 })
+    window.dispatchEvent(new StorageEvent("storage", { key: "gate-garbage-rival", newValue: garbageRecord, storageArea: localStorage }))
+
+    expect(tenure?.signal.aborted).toBe(false)
+
+    // A structurally valid rival record still ends the tenure, same as before.
+    const realRecord = JSON.stringify({ ownerId: "someone-else", fence: 2, expiresAt: Date.now() + 10_000 })
+    window.dispatchEvent(new StorageEvent("storage", { key: "gate-garbage-rival", newValue: realRecord, storageArea: localStorage }))
+    expect(tenure?.signal.aborted).toBe(true)
   })
 
   it("aborts the tenure when the lease record is removed or storage is cleared", async () => {
@@ -193,11 +237,40 @@ describe("createLeadershipGate", () => {
     expect(() => gate.release()).not.toThrow()
   })
 
-  it("warns on an invalid ttlMs through the injected logger", () => {
+  it("throws RangeError at construction on an invalid ttlMs", () => {
+    expect(() => createLeadershipGate("gate-bad-ttl", 0)).toThrow(RangeError)
+    expect(() => createLeadershipGate("gate-bad-ttl-inf", Infinity)).toThrow(RangeError)
+  })
+
+  it("warns once on a very short ttlMs (sub-second TTLs scale poorly with tab count)", () => {
     const warn = vi.fn()
-    createLeadershipGate("gate-bad-ttl", 0, { logger: { warn } })
+    createLeadershipGate("gate-short-ttl", 500, { logger: { warn } })
+    createLeadershipGate("gate-fine-ttl", 10_000, { logger: { warn } })
 
     expect(warn).toHaveBeenCalledTimes(1)
-    expect(warn.mock.calls[0]?.[0]).toContain("ttlMs")
+    expect(warn.mock.calls[0]?.[0]).toContain("storage event")
+  })
+
+  it("acquire rejects with a TimeoutError when the lock wait exceeds waitTimeoutMs", async () => {
+    vi.useFakeTimers()
+    try {
+      const locks = installFakeLocks()
+      let releaseHolder!: () => void
+      void locks.request("gate-wait", () => new Promise<void>((resolve) => (releaseHolder = resolve)))
+
+      const gate = createLeadershipGate("gate-wait", 10_000, { waitTimeoutMs: 50 })
+      const pending = gate.acquire()
+      const assertion = expect(pending).rejects.toMatchObject({ name: "TimeoutError" })
+      await vi.advanceTimersByTimeAsync(50)
+      await assertion
+      releaseHolder()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("throws RangeError at construction on an invalid waitTimeoutMs", () => {
+    expect(() => createLeadershipGate("gate-bad-wait", 10_000, { waitTimeoutMs: 0 })).toThrow(RangeError)
+    expect(() => createLeadershipGate("gate-bad-wait-inf", 10_000, { waitTimeoutMs: Infinity })).not.toThrow()
   })
 })

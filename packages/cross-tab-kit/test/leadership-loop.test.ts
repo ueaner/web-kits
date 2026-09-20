@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { LeadershipContext } from "../src/patterns/leadership-loop"
 import { createLeadershipLoop } from "../src/patterns/leadership-loop"
 import { createLeadershipGate } from "../src/patterns/leadership-gate"
@@ -8,9 +8,16 @@ import { installFakeLocks } from "./harness/fake-locks"
 describe("createLeadershipLoop", () => {
   let world: TabWorld
 
+  beforeEach(() => {
+    // These tests use ttlMs 900ms throughout, which intentionally sits in the gate's
+    // sub-second-TTL warn zone — silence the expected console.warn to keep output readable.
+    vi.spyOn(console, "warn").mockImplementation(() => undefined)
+  })
+
   afterEach(() => {
     world.cleanup()
     vi.unstubAllGlobals()
+    vi.restoreAllMocks()
   })
 
   it("claims leadership immediately and invokes onLeadership once per tenure", async () => {
@@ -219,14 +226,53 @@ describe("createLeadershipLoop", () => {
     await world.advance(600)
     await expect(ctxA?.isStillLeader()).resolves.toBe(true)
   })
+  it("validates ttlMs and renewIntervalMs at construction", () => {
+    world = createTabWorld()
+    const noop = () => {}
+    // Misconfiguration fails fast at construction instead of electing no one silently.
+    expect(() => createLeadershipLoop("loop-bad-ttl", 0, noop)).toThrow(RangeError)
+    expect(() => createLeadershipLoop("loop-bad-renew-zero", 900, noop, { renewIntervalMs: 0 })).toThrow(RangeError)
+    expect(() => createLeadershipLoop("loop-bad-renew-nan", 900, noop, { renewIntervalMs: NaN })).toThrow(RangeError)
+    // renewIntervalMs >= ttlMs: the lease would lapse between renewals — leadership flaps.
+    expect(() => createLeadershipLoop("loop-flap-eq", 900, noop, { renewIntervalMs: 900 })).toThrow(/flap/)
+    expect(() => createLeadershipLoop("loop-flap-gt", 900, noop, { renewIntervalMs: 1_000 })).toThrow(RangeError)
+    expect(() => createLeadershipLoop("loop-ok", 900, noop, { renewIntervalMs: 300 })).not.toThrow()
+  })
 })
 
 describe("createLeadershipLoop with Web Locks available", () => {
   let world: TabWorld
 
+  beforeEach(() => {
+    // Same as above: the 900ms test TTL sits in the sub-second warn zone by design.
+    vi.spyOn(console, "warn").mockImplementation(() => undefined)
+  })
+
   afterEach(() => {
     world.cleanup()
     vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it("self-heals when a tick's acquire times out waiting for the lock", async () => {
+    world = createTabWorld()
+    const locks = installFakeLocks()
+    const warn = vi.fn()
+    let releaseHolder!: () => void
+    void locks.request("loop-heal", () => new Promise<void>((resolve) => (releaseHolder = resolve)))
+
+    const onLeadership = vi.fn()
+    createLeadershipLoop("loop-heal", 3_000, onLeadership, { waitTimeoutMs: 100, logger: { warn } })
+    // The first tick (t=0) queues behind the stuck holder; at t=100 the wait times out, the
+    // tick fails, gets logged — and the loop lives on instead of silently jamming `ticking`.
+    await world.advance(150)
+    expect(onLeadership).not.toHaveBeenCalled()
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0]?.[0]).toContain("tick failed")
+
+    releaseHolder()
+    await world.advance(1_000) // the next tick (t=1000 = ttlMs/3) acquires the now-free lock
+    expect(onLeadership).toHaveBeenCalledTimes(1)
   })
 
   it("elects exactly one leader among two loops contending for the same lock", async () => {
@@ -281,7 +327,7 @@ describe("createLeadershipLoop with Web Locks available", () => {
     let calls = 0
     createLeadershipLoop(
       "loop-throwing",
-      900,
+      3_000,
       () => {
         calls++
         throw new Error("boom")
@@ -295,7 +341,7 @@ describe("createLeadershipLoop with Web Locks available", () => {
     expect(warn.mock.calls[0]?.[0]).toContain("onLeadership")
 
     // The throw didn't kill the loop: renewals keep landing, same tenure, no repeat call.
-    await world.advance(600)
+    await world.advance(1_000)
     const stored = JSON.parse(localStorage.getItem("loop-throwing")!) as { expiresAt: number }
     expect(stored.expiresAt).toBeGreaterThan(Date.now())
     expect(calls).toBe(1)

@@ -58,8 +58,18 @@ export function createFakeLocks(): FakeLockManager {
     const options = typeof optionsOrCallback === "function" ? {} : optionsOrCallback
     const callback = typeof optionsOrCallback === "function" ? optionsOrCallback : (maybeCallback as LockCallback)
 
-    const abortError = () => new DOMException("cross-tab-kit test double: lock request aborted", "AbortError")
-    if (options.signal?.aborted) return Promise.reject(abortError())
+    // The real Web Locks API throws synchronously (a TypeError) when `signal` is combined
+    // with `ifAvailable` (or `steal`) — modeled here so a caller that violates it fails the
+    // same way against the fake as it would in a real browser.
+    if (options.ifAvailable && options.signal) {
+      throw new TypeError("cross-tab-kit test double: signal is not allowed with ifAvailable")
+    }
+
+    // The real Web Locks API rejects with the signal's own `reason` (an AbortError DOMException
+    // by default, or whatever the caller passed to `abort(reason)`) — not a generic error of
+    // its own — so the fake matches that instead of hardcoding one.
+    const abortReason = () => options.signal?.reason ?? new DOMException("cross-tab-kit test double: lock request aborted", "AbortError")
+    if (options.signal?.aborted) return Promise.reject(abortReason())
 
     const queue = queues.get(name) ?? []
     if (!held.has(name) && queue.length === 0) {
@@ -76,7 +86,7 @@ export function createFakeLocks(): FakeLockManager {
           () => {
             const index = queue.indexOf(pending)
             if (index >= 0) queue.splice(index, 1)
-            reject(abortError())
+            reject(abortReason())
           },
           { once: true },
         )

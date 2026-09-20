@@ -1,4 +1,4 @@
-export type { TabLockContext, TabLockOptions, TabLockResult } from "./locks/tab-lock"
+export type { TabLockContext, TabLockOptions, TabLockResult, TryTabLockOptions } from "./locks/tab-lock"
 export { tryWithTabLock, withTabLock } from "./locks/tab-lock"
 export type { LeadershipGate, LeadershipGateOptions, Tenure } from "./patterns/leadership-gate"
 export { createLeadershipGate } from "./patterns/leadership-gate"
