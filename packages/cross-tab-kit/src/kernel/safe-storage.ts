@@ -5,10 +5,10 @@
  * Safari private browsing, storage disabled). `safeSetItem` reports whether the write actually
  * landed, for a caller that wants to know rather than assume.
  *
- * Shared by every localStorage-backed primitive in this package (`poll-lease`,
- * `ttl-dedupe-cache`) so this failure handling lives in one place instead of being
- * re-implemented per module. Exported directly too, for a caller building its own
- * localStorage-backed primitive on top of this package's other exports.
+ * Shared by every localStorage-backed primitive in this package so this failure handling
+ * lives in one place instead of being re-implemented per module. Exported from the
+ * `advanced` subpath too, for a caller building its own localStorage-backed primitive on
+ * top of this package's primitives.
  */
 
 export function safeGetItem(key: string): string | null {

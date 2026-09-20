@@ -1,7 +1,7 @@
 {
   "name": "cross-tab-kit",
   "version": "0.1.0",
-  "description": "Framework-agnostic cross-tab coordination primitives for the browser: a Web Locks mutex, a renewable poll-leader lease, a TTL dedupe cache, and safe localStorage helpers.",
+  "description": "Framework-agnostic cross-tab coordination for the browser: a Web Locks mutex (waiting and skip-if-busy), timer-driven or caller-driven leader election, and a TTL dedupe cache.",
   "keywords": [
     "cross-tab",
     "dedupe",
@@ -32,6 +32,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./advanced": {
+      "types": "./dist/advanced.d.ts",
+      "default": "./dist/advanced.js"
     }
   },
   "publishConfig": {
