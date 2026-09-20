@@ -240,11 +240,13 @@ const poller = new PendingTaskPoller({
 Web Locks API 的浏览器里,`withTabLock` 会退化为完全不加锁;租约写入偶尔静默失败(比如
 配额超限、Safari 隐私模式)时,也可能让两个标签页都以为自己是 leader。如果多个标签页
 可能同时处理同一个任务的完成事件(以上任意一种竞态,或者强制重新登录导致的竞态),可以
-通过 `claimResultOnce` 组合内置的两个原语——它也会覆盖到其它标签页收到广播后的那次派发
-(见上文),所以即使开着选主,也能拿到真正的全局保证:
+通过 `claimResultOnce` 组合 [`cross-tab-kit`](https://github.com/ueaner/cross-tab-kit)(这个包
+内部依赖它,但不重新导出,需要自己单独安装:`pnpm add cross-tab-kit`)提供的原语——它也
+会覆盖到其它标签页收到广播后的那次派发(见上文),所以即使开着选主,也能拿到真正的全局
+保证:
 
 ```ts
-import { withTabLock, createTtlDedupeCache } from "pending-task-kit"
+import { withTabLock, createTtlDedupeCache } from "cross-tab-kit"
 
 const notified = createTtlDedupeCache("my-app-pending-task-notified", 24 * 60 * 60 * 1000)
 

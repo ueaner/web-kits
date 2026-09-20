@@ -1,6 +1,6 @@
+import { safeGetItem } from "cross-tab-kit"
 import { create, type StoreApi, type UseBoundStore } from "zustand"
 import { createJSONStorage, persist } from "zustand/middleware"
-import { safeGetItem } from "./safe-storage"
 import type { PendingTask, PendingTaskLogger } from "./types"
 
 export const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000
@@ -97,9 +97,9 @@ export function parseTasksFromStorageValue<TType extends string = string>(value:
  *
  *  Goes through `safeGetItem` rather than reading `localStorage` directly: a browser with
  *  site data/storage fully disabled can make even `typeof localStorage` itself throw a
- *  SecurityError (see `safe-storage.ts`'s own doc comment) — reading it unguarded here would
- *  propagate straight out of every store mutator, `addTaskIfMissing`, and `flushBatch`, in a
- *  package that otherwise degrades every other localStorage access safely. */
+ *  SecurityError (see the doc comment on `safeGetItem` in `cross-tab-kit`) — reading it
+ *  unguarded here would propagate straight out of every store mutator, `addTaskIfMissing`, and
+ *  `flushBatch`, in a package that otherwise degrades every other localStorage access safely. */
 export function readPersistedTasks<TType extends string = string>(storageKey: string): PendingTask<TType>[] {
   return parseTasksFromStorageValue<TType>(safeGetItem(storageKey))
 }

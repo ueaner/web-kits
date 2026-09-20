@@ -252,12 +252,14 @@ before it resolves, which then independently completes the same task and calls i
 `claimResultOnce`; `withTabLock` degrades to no mutual exclusion at all in a browser without the
 Web Locks API; and a lease write that silently fails (quota exceeded, private-mode Safari) can,
 rarely, let two tabs both believe they're leader. If several tabs can end up processing the same
-completion (any of those, or a forced re-login race), compose the included primitives via
+completion (any of those, or a forced re-login race), compose primitives from
+[`cross-tab-kit`](https://github.com/ueaner/cross-tab-kit) (a separate package this one depends
+on internally, but doesn't re-export — install it yourself: `pnpm add cross-tab-kit`) via
 `claimResultOnce` — this also gates the _relayed_ dispatch on every other tab (see above), so it
 gives you a true system-wide guarantee even with leader election on:
 
 ```ts
-import { withTabLock, createTtlDedupeCache } from "pending-task-kit"
+import { withTabLock, createTtlDedupeCache } from "cross-tab-kit"
 
 const notified = createTtlDedupeCache("my-app-pending-task-notified", 24 * 60 * 60 * 1000)
 
