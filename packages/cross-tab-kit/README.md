@@ -138,11 +138,15 @@ if (notified.has(orderId)) disableResendButton()
   leader election for a standing role (a poller, a shared socket). `onLeadership(ctx)` fires
   once per tenure; `ctx = { fence, signal, isStillLeader() }`. Returns a `stop()` function.
   A tick that can't acquire the arbitration lock within `waitTimeoutMs` (default `ttlMs`)
-  fails and logs — the loop self-heals on the next tick.
+  just elects nobody this round (see `createLeadershipGate` below) — the loop self-heals on
+  the next tick.
 - **`createLeadershipGate(storageKey, ttlMs, options?)`** — the same machinery without a
-  timer: `acquire()` returns a `Tenure` (`{ fence, signal, isStillValid() }`) or null, and
-  rejects with a `TimeoutError` if the arbitration lock wait exceeds `waitTimeoutMs`;
-  `release()` is a synchronous best-effort tombstone.
+  timer: `acquire()` returns a `Tenure` (`{ fence, signal, isStillValid() }`) or null, treating
+  a wait for the arbitration lock that exceeds `waitTimeoutMs` the same as "someone else holds
+  the lease" — both resolve null rather than one of them rejecting. A wait running past half of
+  `waitTimeoutMs` (capped at 5s) logs a warning once per gate instance, since that's the only
+  visibility into a wedged holder once this never throws for it. `release()` is a synchronous
+  best-effort tombstone.
 - **`createTtlDedupeCache(storageKey, ttlMs, options?)`** — a localStorage-backed,
   TTL-expiring "claim once" cache: `claim(id)` returns `true` the first time `id` is claimed
   within the TTL window, `false` on any repeat (the window is fixed from the first claim — a

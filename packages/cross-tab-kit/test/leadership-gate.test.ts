@@ -251,7 +251,9 @@ describe("createLeadershipGate", () => {
     expect(warn.mock.calls[0]?.[0]).toContain("storage event")
   })
 
-  it("acquire rejects with a TimeoutError when the lock wait exceeds waitTimeoutMs", async () => {
+  it("acquire resolves null (not a rejection) when the lock wait exceeds waitTimeoutMs", async () => {
+    // A wait-timeout is treated the same as "someone else holds the lease" — both are "not
+    // confirmed as leader this call" to the caller, so neither is a rejection to catch.
     vi.useFakeTimers()
     try {
       const locks = installFakeLocks()
@@ -260,10 +262,58 @@ describe("createLeadershipGate", () => {
 
       const gate = createLeadershipGate("gate-wait", 10_000, { waitTimeoutMs: 50 })
       const pending = gate.acquire()
-      const assertion = expect(pending).rejects.toMatchObject({ name: "TimeoutError" })
       await vi.advanceTimersByTimeAsync(50)
-      await assertion
+      await expect(pending).resolves.toBeNull()
       releaseHolder()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("isStillValid resolves false (not a rejection) when the lock wait exceeds waitTimeoutMs", async () => {
+    vi.useFakeTimers()
+    try {
+      const locks = installFakeLocks()
+      const gate = createLeadershipGate("gate-revalidate-wait", 10_000, { waitTimeoutMs: 50 })
+      const tenure = await gate.acquire()
+      expect(tenure).not.toBeNull()
+
+      let releaseHolder!: () => void
+      void locks.request("gate-revalidate-wait", () => new Promise<void>((resolve) => (releaseHolder = resolve)))
+
+      const pending = tenure?.isStillValid()
+      await vi.advanceTimersByTimeAsync(50)
+      await expect(pending).resolves.toBe(false)
+      // The failed re-check also ends the tenure locally, same as any other invalid re-check.
+      expect(tenure?.signal.aborted).toBe(true)
+      releaseHolder()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("warns once per gate instance when a claim's wait for the arbitration lock runs long", async () => {
+    vi.useFakeTimers()
+    try {
+      const locks = installFakeLocks()
+      let releaseHolder!: () => void
+      void locks.request("gate-slow-warn", () => new Promise<void>((resolve) => (releaseHolder = resolve)))
+
+      const warn = vi.fn()
+      // waitTimeoutMs/2 = 5_000, above the 5s cap — the cap is what should actually fire.
+      const gate = createLeadershipGate("gate-slow-warn", 20_000, { waitTimeoutMs: 20_000, logger: { warn } })
+      const first = gate.acquire()
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(warn.mock.calls[0]?.[0]).toContain("arbitration lock")
+
+      // A second slow wait on the same gate must not warn again — once per gate instance.
+      const second = gate.acquire()
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(warn).toHaveBeenCalledTimes(1)
+
+      releaseHolder()
+      await Promise.all([first, second])
     } finally {
       vi.useRealTimers()
     }

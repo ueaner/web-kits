@@ -263,12 +263,14 @@ describe("createLeadershipLoop with Web Locks available", () => {
 
     const onLeadership = vi.fn()
     createLeadershipLoop("loop-heal", 3_000, onLeadership, { waitTimeoutMs: 100, logger: { warn } })
-    // The first tick (t=0) queues behind the stuck holder; at t=100 the wait times out, the
-    // tick fails, gets logged — and the loop lives on instead of silently jamming `ticking`.
+    // The first tick (t=0) queues behind the stuck holder; the wait running long logs once
+    // (t=50, half of waitTimeoutMs), and at t=100 the wait times out — the gate's acquire()
+    // resolves null instead of rejecting, so the tick just quietly elects nobody this round
+    // instead of failing — and the loop lives on instead of silently jamming `ticking`.
     await world.advance(150)
     expect(onLeadership).not.toHaveBeenCalled()
     expect(warn).toHaveBeenCalledTimes(1)
-    expect(warn.mock.calls[0]?.[0]).toContain("tick failed")
+    expect(warn.mock.calls[0]?.[0]).toContain("arbitration lock")
 
     releaseHolder()
     await world.advance(1_000) // the next tick (t=1000 = ttlMs/3) acquires the now-free lock
