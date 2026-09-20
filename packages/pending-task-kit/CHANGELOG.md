@@ -1,5 +1,30 @@
 # pending-task-kit
 
+## 0.4.0
+
+### Minor Changes
+
+- e34ae40: `silentOnSuccess`/`silentOnFailure` no longer suppress `onResult` (or the DOM event/cross-tab
+  relay) entirely — they now only set `detail.silent` on the dispatched
+  `PendingTaskResultEventDetail`, which `onResult` can check itself. The engine has no notion of
+  what a "notification" is (per this package's own "notification channel deliberately not part
+  of this package"), so having it withhold `onResult` on your behalf assumed `onResult` only ever
+  means "show a toast" — not true for callers that also use it to switch a view or invalidate a
+  cache on an outcome they don't want to toast for.
+
+  Migration: a caller that relied on the old "silent = `onResult` never runs" behavior should add
+  `if (detail.silent) return` (or equivalent) as the first line of its own `onResult`.
+
+  `expired` is unaffected — it still never reaches `onResult` at all, regardless of any flag.
+
+- 58fc7f9: **Breaking**: `withTabLock`, `createTtlDedupeCache`, `createPollLeaseClaimer`, `generatePollOwnerId`, and the safe-storage helpers are no longer exported from this package — they've moved to [`cross-tab-kit`](https://github.com/ueaner/cross-tab-kit), which this package now depends on internally for its own cross-tab coordination. None of them had a real dependency on the "task" domain, so they're better served as their own standalone package.
+
+  Migration: if you were composing `claimResultOnce` with `withTabLock`/`createTtlDedupeCache` per the README's "Cross-tab duplicate-toast dedupe" section, `pnpm add cross-tab-kit` and import them from there instead — the API is unchanged, only the package they come from.
+
+  Two `createTtlDedupeCache` edge behaviors did change with the move (both improvements, but "the API is unchanged" above refers to the signature, not these): a malformed stored entry (null, or a non-numeric `claimedAt` — the state is hand-editable JSON) is now treated as already expired instead of throwing, and a repeat claim with nothing expired no longer rewrites localStorage (the claim window is unchanged either way).
+
+  `clearResultRelay`/`parseResultRelay`/`writeResultRelay` are unaffected — they stay here, since they're genuinely task-domain-coupled (they validate a `PendingTask` shape).
+
 ## 0.3.0
 
 ### Minor Changes
