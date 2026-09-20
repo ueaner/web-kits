@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { createPollLeaseClaimer, generatePollOwnerId } from "../src/poll-lease"
+import { createPollLeaseClaimer, generatePollOwnerId } from "../src/primitives/poll-lease"
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -88,6 +88,51 @@ describe("createPollLeaseClaimer", () => {
     const lease = createPollLeaseClaimer("test-lease", 10_000)
     // Falls back to treating the lease as unheld rather than trusting a malformed record.
     expect(lease.claim("owner-b")).toEqual({ leader: true, fence: 1 })
+  })
+
+  it("treats a lease record with non-finite numbers (e.g. 1e999 → Infinity) as unreadable garbage", () => {
+    // Written as a raw JSON string: JSON.stringify would serialize Infinity as null, but an
+    // out-of-range literal in hand-edited storage parses to Infinity — the case under test.
+    localStorage.setItem("test-lease", '{"ownerId":"owner-a","fence":1,"expiresAt":1e999}')
+    const lease = createPollLeaseClaimer("test-lease", 10_000)
+    // An Infinity expiresAt could never lapse — accepting the record would block takeover forever.
+    expect(lease.claim("owner-b")).toEqual({ leader: true, fence: 1 })
+  })
+
+  it("warns on a NaN or infinite ttlMs, which would silently break election", () => {
+    const warn = vi.fn()
+
+    createPollLeaseClaimer("test-lease-nan", NaN, { logger: { warn } })
+    createPollLeaseClaimer("test-lease-inf", Infinity, { logger: { warn } })
+
+    expect(warn).toHaveBeenCalledTimes(2)
+    expect(warn.mock.calls[0]?.[0]).toContain("ttlMs")
+  })
+
+  it("treats a throwing localStorage read as 'no lease' (read failure degrades to unheld)", () => {
+    // A valid lease owned by someone else is sitting in storage — but reads throw, so this
+    // tab is blind to it. The claim fails open (reports leader) rather than blocking forever.
+    localStorage.setItem("test-lease-read-fail", JSON.stringify({ ownerId: "owner-x", fence: 5, expiresAt: Date.now() + 10_000 }))
+    const getItemSpy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError")
+    })
+
+    const lease = createPollLeaseClaimer("test-lease-read-fail", 10_000)
+    expect(lease.claim("owner-a")).toEqual({ leader: true, fence: 1 })
+
+    getItemSpy.mockRestore()
+  })
+
+  it("release() doesn't throw when the tombstone write fails", () => {
+    const lease = createPollLeaseClaimer("test-lease-release-fail", 10_000)
+    lease.claim("owner-a")
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError")
+    })
+
+    expect(() => lease.release("owner-a")).not.toThrow()
+
+    setItemSpy.mockRestore()
   })
 
   it("two independent claimers on different storage keys don't contend with each other", () => {

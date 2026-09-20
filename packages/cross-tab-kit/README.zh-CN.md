@@ -1,10 +1,10 @@
 # cross-tab-kit
 
-框架无关的浏览器跨标签页协调原语:一把 Web Locks 互斥锁、一份可续租的选主租约、一个
-TTL "只认领一次"去重缓存,以及安全的 localStorage 读写封装。零运行时依赖,不预设任何
-框架——都是可以直接放进任意浏览器代码库的普通函数,只要这个代码库同源开着多个标签页、
-需要它们互相协调:让某段代码只在一个标签页里跑、在多个标签页里选出一个"leader"、或者
-保证某个动作不管多少个标签页同时抢着触发,最终都只会真正执行一次。
+框架无关的浏览器跨标签页协调库:一把 Web Locks 互斥锁(等待型和拿不到就跳过两种)、
+选主(定时器驱动 / 调用方驱动两种)、一个 TTL "只认领一次"去重缓存。零运行时依赖,不
+预设任何框架——都是可以直接放进任意浏览器代码库的普通函数,只要这个代码库同源开着多
+个标签页、需要它们互相协调:让某段代码只在一个标签页里跑、在多个标签页里选出一个
+"leader"、或者保证某个动作不管多少个标签页同时抢着触发,最终都只会真正执行一次。
 
 ## 安装
 
@@ -12,82 +12,188 @@ TTL "只认领一次"去重缓存,以及安全的 localStorage 读写封装。�
 pnpm add cross-tab-kit
 ```
 
+## 用法
+
+### 只在一个标签页里刷新 token(`tryWithTabLock`)
+
+拿不到就跳过的互斥锁:别的标签页正在刷时,不要在它后面排队——每个排队的标签页各刷
+一次,正是刷新接口被服务端限流的原因。
+
+```ts
+import { tryWithTabLock } from "cross-tab-kit"
+
+async function getValidToken(): Promise<string> {
+  const cached = readCachedToken()
+  if (cached) return cached
+
+  const result = await tryWithTabLock("my-app:refresh-token", (ctx) => refreshToken(ctx.timeoutSignal))
+  if (result.acquired) return result.value
+
+  // 别的标签页正在刷:等它把新 token 写进 localStorage——写入触发的 storage 事件恰好只在
+  // *其它*标签页里触发,正是这个场景——但等待必须带超时:刷新方可能失败,那时不能永久挂起,
+  // 轮到自己再试一次。
+  const token = await waitForStorageValue("my-app:token", { timeoutMs: 5_000 })
+  if (token === null) return getValidToken() // 刷新方失败了——自己上场
+  return token
+}
+```
+
+`waitForStorageValue` 是调用方侧几行代码(一个 storage 事件监听加一个超时),不属于
+这个包——等待和事件不是协调原语。
+
+### 跨标签页复用单条 WebSocket / 单点轮询(`createLeadershipLoop`)
+
+定时器驱动的选主:一个标签页持有 leadership 并按间隔续租(默认 `ttlMs / 3`),其它
+标签页待命;leader 的租约一旦过期(关闭、崩溃、冻结的标签页永远不会卡住接管——TTL
+就是兜底),立刻有人顶上。
+
+```ts
+import { createLeadershipLoop } from "cross-tab-kit"
+
+const stop = createLeadershipLoop(
+  "my-app:ws-leader",
+  30_000,
+  (ctx) => {
+    // 这个标签页是 leader。失主的那一刻 ctx.signal 就会 abort——把它链接进工作里,
+    // 让"失主"成为真正的取消,而不是事后丢弃。
+    const socket = new WebSocket("wss://example.com/stream")
+    ctx.signal.addEventListener("abort", () => socket.close(), { once: true })
+  },
+  { onLeadershipLost: () => console.log("leadership 漂移到了其它标签页") },
+)
+
+// 关闭时:stop()——幂等;停掉定时器并释放租约。
+```
+
+`onLeadership` 每段任期触发一次——包括失去后夺回——同一段任期内不会重复。注意后台
+标签页的定时器会被节流:`ttlMs` 小于约 3 分钟时,leadership 会漂移到可见标签页(通常
+正是期望行为);需要后台保持时把 `ttlMs` 调大。
+
+### 认领时机耦合业务 tick 的手动档选主(`createLeadershipGate`)
+
+手动档:不内置定时器,空闲 tick 零存储流量,认领时机由调用方精确控制——比如在轮询
+tick 内、第一个网络请求之前认领。
+
+```ts
+import { createLeadershipGate } from "cross-tab-kit"
+
+const gate = createLeadershipGate("my-app:poll-leader", 8_000)
+
+async function runTick() {
+  const tenure = await gate.acquire()
+  if (!tenure) return // 这一轮是别的标签页领先——跳过网络工作
+  const response = await fetch("/api/pending", { signal: tenure.signal })
+  // 使用响应前再确认一次:慢请求期间 leadership 可能已经易主。
+  if (!(await tenure.isStillValid())) return
+  await handle(response)
+}
+
+// 关闭时:gate.release()——同步、尽力而为的 tombstone。
+```
+
+`tenure.signal` 在别的标签页认领成功写盘的那一刻就会 abort(gate 监听了那次写入触发
+的 storage 事件),而不是等到你下次复查。
+
+### 跨标签页"只做一次"(`createTtlDedupeCache`)
+
+```ts
+import { createTtlDedupeCache, withTabLock } from "cross-tab-kit"
+
+const notified = createTtlDedupeCache("my-app:notified-once", 24 * 60 * 60 * 1000, {
+  maxEntries: 1_000, // 可选上限:超出时按认领时间最旧逐出
+})
+
+// claim() 是纯粹的不加锁"读-改-写"——需要跨标签页原子时用 withTabLock 包一层。
+if (await withTabLock("my-app:notified-once", () => notified.claim(orderId))) {
+  showToast("Order confirmed")
+}
+
+// 无副作用的查询,比如 UI 问"这条通知过了没"
+if (notified.has(orderId)) disableResendButton()
+```
+
 ## 核心概念
 
 - **`withTabLock(name, operation, options?)`** —— 把 `operation` 包在一个具名的
   [Web Locks API](https://developer.mozilla.org/zh-CN/docs/Web/API/Web_Locks_API) 锁
-  (`navigator.locks`)里执行,保证同一时刻只有一个打开的标签页在跑它。Web Locks 不可用时
-  (老浏览器、非安全上下文)退化为直接、不加锁地执行 `operation`。`options.signal` 可以
-  中止*等待*锁的过程(以 `AbortError` 拒绝);`options.timeoutMs` 在 `operation` 迟迟不
-  了结时以 `TimeoutError` 拒绝并释放锁——挂起的操作就不会永久卡住其它所有标签页(操作
-  本身无法被取消,它会继续在后台跑,最终结果直接被丢弃)。
-- **`createPollLeaseClaimer(storageKey, ttlMs, options?)`** —— 一份可续租、基于
-  localStorage 的租约:同一时刻只认一个 owner,但跟"一直持有的锁"不同,这份认定会
-  自己过期(上一次成功 `claim` 之后 `ttlMs`),不需要显式释放——停止续租的 owner
-  (标签页被关闭、崩溃、冻结)不会永久卡住其它标签页接管。`claim(ownerId)` 在
-  `{ leader: true }` 之外还会返回一个 `fence`(世代号)——留着它,后续就能区分出
-  "现在没人持有这份租约"和"这份租约从我拿到这个 fence 起就一直是我的,中间没被别人
-  抢走过又还回来"。它本身不是跨标签页原子的——要靠 `withTabLock` 组合(见下文)。
-- **`createTtlDedupeCache(storageKey, ttlMs)`** —— 一个基于 localStorage、TTL 过期的
-  "只认领一次"缓存:`claim(id)` 在 TTL 窗口内第一次认领某个 id 时返回 `true`,之后
-  重复认领返回 `false`——比如保证一次跨标签页的通知/上报事件,即使好几个标签页同时
-  抢着处理同一个 id,也只会真正触发一次。TTL 窗口从首次认领起算、固定不变——重复
-  `claim(id)` 不会续期。`clear()` 清空所有认领记录。
-- **`safeGetItem` / `safeSetItem` / `safeRemoveItem`** —— 一层很薄的 `localStorage`
-  封装,遇到 `localStorage` 完全不可用(SSR、没有 `window`)或者调用本身会抛错(配额
-  超限、Safari 隐私模式、存储被禁用、cookie/站点数据被拦截)时优雅降级而不是抛出异常。
-  包里其它每一个原语都是在这几个函数上搭出来的;如果你要自己搭一个基于 localStorage
-  的原语,可以直接用它们。
+  (`navigator.locks`)里执行,保证同一时刻只有一个打开的标签页在跑它。Web Locks 不可
+  用时(老浏览器、非安全上下文)退化为直接、不加锁地执行。`options.signal` 可以中止
+  *等待*锁的过程(以 `AbortError` 拒绝);`options.timeoutMs` 在 `operation` 迟迟不了
+  结时以 `TimeoutError` 拒绝、释放锁并 abort `ctx.timeoutSignal`——操作本身无法被取消
+  (JS 没法中断任意代码),所以超时之后可能有两个标签页短暂地同时处于 `operation` 里,
+  副作用要幂等。
+- **`tryWithTabLock(name, operation, options?)`** —— 拿不到就跳过的版本:结果是
+  `{ acquired: true, value }` 或 `{ acquired: false }`,而不是排在持有者后面。无 Web
+  Locks 的降级路径上没有锁可争,一律报 `acquired: true`。
+- **`createLeadershipLoop(storageKey, ttlMs, onLeadership, options?)`** —— 定时器驱
+  动的选主,用于持续持有的角色(轮询、共享连接)。`onLeadership(ctx)` 每段任期触发
+  一次;`ctx = { fence, signal, isStillLeader() }`。返回 `stop()` 函数。
+- **`createLeadershipGate(storageKey, ttlMs, options?)`** —— 同一套机制的无定时器版
+  本:`acquire()` 返回 `Tenure`(`{ fence, signal, isStillValid() }`)或 null;
+  `release()` 是同步、尽力而为的 tombstone。
+- **`createTtlDedupeCache(storageKey, ttlMs, options?)`** —— 基于 localStorage、TTL
+  过期的"只认领一次"缓存:`claim(id)` 在 TTL 窗口内首次认领返回 `true`,重复返回
+  `false`(窗口从首次认领起算、固定不变——重复认领不续期)。`has(id)` 只查询不认领;
+  `clear()` 清空全部。`options.maxEntries` 给缓存加上限,超出时按认领时间最旧逐出。
+- **`Logger`** —— 包里所有 `options.logger` 都是最小的 `{ warn(message): void }`,
+  `console` 或你现有的任何 logger 都可以直接赋值。
 
-## 用法
+## `advanced` 子路径
+
+场景级 API 底下垫着的原语,留给要自己组合协调逻辑的调用方:
 
 ```ts
-import { withTabLock, createPollLeaseClaimer, createTtlDedupeCache, generatePollOwnerId } from "cross-tab-kit"
-
-// 互斥:同一时刻只有一个打开的标签页会跑这段代码。
-await withTabLock("my-app:sync-fcm-token", async () => {
-  await registerPushToken()
-})
-
-// 选主:同一时刻只有一个打开的标签页扮演"轮询者"这个角色。
-const lease = createPollLeaseClaimer("my-app:poll-leader", 30_000)
-const ownerId = generatePollOwnerId()
-const result = await withTabLock("my-app:poll-leader", () => lease.claim(ownerId))
-if (result.leader) {
-  // 在租约的 TTL 到期之前,这个标签页就是 leader——除非它持续调用 claim() 续租
-}
-
-// 去重:即使两个标签页同时完成了同一件事,也只触发一次。
-const notified = createTtlDedupeCache("my-app:notified-once", 24 * 60 * 60 * 1000)
-if (await withTabLock("my-app:notified-once", () => notified.claim(orderId))) {
-  showToast("Order confirmed")
-}
+import {
+  createPollLeaseClaimer,
+  generatePollOwnerId,
+  safeGetItem,
+  safeSetItem,
+  safeRemoveItem,
+  type PollLeaseClaimer,
+  type PollLeaseClaimResult,
+  type PollLeaseClaimerOptions,
+  type Logger,
+} from "cross-tab-kit/advanced"
 ```
 
-`withTabLock` 和 `createPollLeaseClaimer`/`createTtlDedupeCache` 是刻意分开的:租约和去重
-缓存本身就是纯粹的、不加锁的"读 → 判断 → 写"原语——要不要把某一次 `claim()` 调用包进
-`withTabLock`、怎么包,由调用方自己决定,而不是这个包替所有调用方强行绑死一种加锁策略。
+`createPollLeaseClaimer(storageKey, ttlMs)` 是两个选主 API 底下那份可续租、基于
+localStorage 的租约:`claim(ownerId)` 返回 `{ leader: true, fence }` 或
+`{ leader: false }`——留下 `fence`,之后就能区分"现在没人持有这份租约"和"这份租约
+从我拿到这个 fence 起就一直是我的,中间没被别人抢走过又还回来"。`claim`/`release`
+是同步的、不隐式加锁(要跨标签页原子性就自己包 `withTabLock`——`createLeadershipGate`
+内部正是这个组合)、存储写失败时 fail-open,`release` 写的是过期 tombstone 而不是删
+除,所以 fence 严格递增。`safeGetItem`/`safeSetItem`/`safeRemoveItem` 是包里每个原语
+共用的一层很薄的 localStorage 封装:无论存储完全不可用(SSR、没有 `window`)还是调
+用本身抛错(配额超限、Safari 隐私模式、存储被禁用),都优雅降级而不是抛出异常。
 
 ## 运行环境说明
 
-- **Web Locks 不可用**:`withTabLock` 退化成不加锁直接执行 `operation`——每个标签页都会
-  跑一遍,没有互斥。`createPollLeaseClaimer`/`createTtlDedupeCache` 本身不依赖 Web
-  Locks,但如果拿一个已经退化的 `withTabLock` 去组合它们,它们自己的读-改-写就可能在
-  标签页之间产生竞态。这是调用方在这种环境下要自己权衡的真实可用性/一致性取舍,这个包
-  没法帮你兜底。
-- **localStorage 不可用或抛错**:包里每个原语都会优雅降级(具体降级方式见
-  `safeGetItem`/`safeSetItem`/`safeRemoveItem` 各自的文档注释)。一个写不进去的
-  `createPollLeaseClaimer`/`createTtlDedupeCache` 仍然会返回结果,只是失去了跨标签页
-  保证——跟 `withTabLock` 自己的退化是同一种"协调变成尽力而为,而不是直接出错"的取舍。
+- **Web Locks 不可用**:`withTabLock` 退化成不加锁直接执行 `operation`——每个标签页
+  都会跑一遍,没有互斥;`tryWithTabLock` 报 `acquired: true`。选主 API 仍然可用(租约
+  基于存储而不是锁),但认领可能在标签页之间产生竞态,短暂出现双主——TTL 和 fence 保
+  证它自愈,而不是出错。
+- **Web Locks 的死锁与冻结陷阱**:Web Locks 不可重入——在同一个锁名下嵌套
+  `withTabLock`(直接或间接)必然死锁;跨代码路径以不一致的顺序获取两个锁名同样会死
+  锁。这两种情况 `timeoutMs` 都救不了:它只约束 `operation` 阶段,管不到等锁阶段——等
+  锁本身需要可中止的话请用 `signal`。被冻结在前进/后退缓存(bfcache)里的标签页也会一
+  直持有它已获得的锁,直到浏览器销毁该页面,期间等待同名锁的其它标签页全被卡住。基于
+  租约的选主 API 在设计上免疫冻结场景(租约会自己过期),但长耗时的 `withTabLock` 临界
+  区不行。
+- **localStorage 不可用或抛错**:包里每个原语都会优雅降级。写不进去的租约或去重缓存
+  仍然会返回结果,只是失去了跨标签页保证——跟 `withTabLock` 自己的退化是同一种"协调
+  变成尽力而为,而不是直接出错"的取舍。
+- **后台标签页节流**:Chrome 对隐藏超过 5 分钟的标签页启用 intensive throttling(定
+  时器对齐到分钟级)。`createLeadershipLoop` 的 leader 如果被切到后台且 `ttlMs` 小于约
+  3 分钟,续租会断,leadership 漂移到可见标签页——通常正是期望行为;需要后台保持时请
+  用 `ttlMs >= 3 分钟`。
 
 ## 刻意不在这个包的范围内
 
 - 这几个原语之上的任何东西——任务队列、轮询引擎、重试/退避策略、通知分发。这个包只
   提供协调用的基础构件,协调的对象是什么完全由使用方决定。
-- 一个带丢锁检测(`assertOwned()`)的、基于 IndexedDB 的独占资源锁——用在"即使 Web
-  Locks 不可用,也不能接受两个标签页都以为自己持有"这类场景。这个包的
-  `createPollLeaseClaimer` 是刻意接受这种退化的(见上文"运行环境说明");接受不了这种
-  退化的调用方,可能需要比这个包提供的更重的原语。
+- 强一致、跨浏览器/跨设备协调、消息广播(`BroadcastChannel` 原生足够)、高频状态同
+  步。
+- Web Locks 的 `steal`、读写锁、锁检视——有真实需求时都是纯加法。
 
 ## 贡献
 

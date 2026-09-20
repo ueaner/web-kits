@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { safeGetItem, safeRemoveItem, safeSetItem } from "../src/safe-storage"
+import { safeGetItem, safeRemoveItem, safeSetItem } from "../src/kernel/safe-storage"
 
 describe("safeGetItem / safeSetItem / safeRemoveItem", () => {
   beforeEach(() => {
