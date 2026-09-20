@@ -1,6 +1,6 @@
 {
   "name": "cross-tab-kit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Framework-agnostic cross-tab coordination for the browser: a Web Locks mutex (waiting and skip-if-busy), timer-driven or caller-driven leader election, and a TTL dedupe cache.",
   "keywords": [
     "cross-tab",
