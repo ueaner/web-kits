@@ -132,12 +132,14 @@ if (notified.has(orderId)) disableResendButton()
 - **`createLeadershipLoop(storageKey, ttlMs, onLeadership, options?)`** —— 定时器驱
   动的选主,用于持续持有的角色(轮询、共享连接)。`onLeadership(ctx)` 每段任期触发
   一次;`ctx = { fence, signal, isStillLeader() }`。返回 `stop()` 函数。某一轮 tick
-  在 `waitTimeoutMs`(默认 `ttlMs`)内拿不到仲裁锁会失败并打日志——下一轮 tick 自动
-  自愈。
+  在 `waitTimeoutMs`(默认 `ttlMs`)内拿不到仲裁锁,这一轮就当选不出人(见下面
+  `createLeadershipGate`)——下一轮 tick 自动自愈。
 - **`createLeadershipGate(storageKey, ttlMs, options?)`** —— 同一套机制的无定时器版
-  本:`acquire()` 返回 `Tenure`(`{ fence, signal, isStillValid() }`)或 null,等待仲
-  裁锁超过 `waitTimeoutMs` 时以 `TimeoutError` 拒绝;`release()` 是同步、尽力而为的
-  tombstone。
+  本:`acquire()` 返回 `Tenure`(`{ fence, signal, isStillValid() }`)或 null;等待仲
+  裁锁超过 `waitTimeoutMs` 和"锁被别人占着"是同等地位——都是 resolve null,不是拒
+  绝。等待过半 `waitTimeoutMs`(封顶 5 秒)仍未拿到锁,每个 gate 实例只会 warn 一次
+  ——既然这种情况不再抛错,这条日志就是唯一能看见"卡在谁后面"的地方。`release()`
+  是同步、尽力而为的 tombstone。
 - **`createTtlDedupeCache(storageKey, ttlMs, options?)`** —— 基于 localStorage、TTL
   过期的"只认领一次"缓存:`claim(id)` 在 TTL 窗口内首次认领返回 `true`,重复返回
   `false`(窗口从首次认领起算、固定不变——重复认领不续期)。`has(id)` 只查询不认领;

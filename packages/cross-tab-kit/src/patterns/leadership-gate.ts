@@ -1,6 +1,18 @@
 import { assertPositiveFiniteMs, type Logger, resolveLogger } from "../kernel/logger"
 import { withTabLock } from "../locks/tab-lock"
-import { createPollLeaseClaimer, generatePollOwnerId, validateLeaseRecord } from "../primitives/poll-lease"
+import { createPollLeaseClaimer, generatePollOwnerId, validateLeaseRecord, type PollLeaseClaimResult } from "../primitives/poll-lease"
+
+/** How `withTabLock` reports its own `waitTimeoutMs` expiring — used to tell "we waited too
+ *  long for the arbitration lock" apart from any other, unexpected rejection. */
+function isArbitrationWaitTimeout(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "TimeoutError"
+}
+
+/** Cap on how long to wait before warning that the arbitration lock's wait might be stuck
+ *  behind a wedged holder. Deliberately low even against a very long (or `Infinity`)
+ *  `waitTimeoutMs`: half of "wait however long it takes" is still "however long it takes",
+ *  and a stuck-holder symptom worth surfacing looks the same regardless of the eventual bound. */
+const SLOW_WAIT_WARN_MS = 5_000
 
 /**
  * One tenure of leadership handed out by `LeadershipGate.acquire`. Capture `fence` with the
@@ -16,20 +28,27 @@ export interface Tenure {
    *  after-the-fact result discarding. */
   readonly signal: AbortSignal
   /** Locked re-claim + fence comparison — and a renewal when it returns true, so re-checking
-   *  also extends the tenure. False means this tenure is over; discard anything in flight.
-   *  Rejects with a `TimeoutError` if the arbitration lock wait exceeds `waitTimeoutMs`. */
+   *  also extends the tenure. False means this tenure is over; discard anything in flight —
+   *  including when the arbitration lock's wait itself exceeds `waitTimeoutMs`: that's treated
+   *  the same as "someone else holds the lease right now" rather than a rejection, since both
+   *  mean the same thing to the caller (not confirmed as leader this check). A logger warning
+   *  (see `LeadershipGateOptions.logger`) is the visibility for a wait running long, not an
+   *  exception the caller has to catch. */
   isStillValid(): Promise<boolean>
 }
 
 export interface LeadershipGateOptions {
   /** Name of the Web Locks mutex claims are serialized through. Defaults to `storageKey`. */
   lockName?: string
-  /** How long a claim waits for the arbitration lock before the acquire rejects with a
-   *  `TimeoutError`. Defaults to `ttlMs` — waiting longer than the lease itself is never
-   *  useful: even if the wait succeeded, the claimed lease would start out that much closer
-   *  to expiry. */
+  /** How long a claim waits for the arbitration lock before giving up on it for this call —
+   *  treated the same as "someone else holds the lease" (see `LeadershipGate.acquire`).
+   *  Defaults to `ttlMs` — waiting longer than the lease itself is never useful: even if the
+   *  wait succeeded, the claimed lease would start out that much closer to expiry. */
   waitTimeoutMs?: number
-  /** Diagnostic-warning channel (the very-short-`ttlMs` warning below). Defaults to `console`. */
+  /** Diagnostic-warning channel: the very-short-`ttlMs` warning below, and a once-per-instance
+   *  warning if a claim's wait for the arbitration lock is running long (see
+   *  `LeadershipGate.acquire`) — the latter is this gate's only visibility into that case, since
+   *  it resolves rather than rejects. Defaults to `console`. */
   logger?: Logger
 }
 
@@ -40,10 +59,13 @@ export const TENURE_RELEASED_REASON = "cross-tab-kit:tenure-released"
 
 export interface LeadershipGate {
   /** Claims leadership right now: resolves to a `Tenure` if this gate is the leader, or null
-   *  if another tab currently holds the lease. Rejects with a `TimeoutError` if the
-   *  arbitration lock can't be acquired within `waitTimeoutMs` (default `ttlMs`). No timers —
-   *  claiming and renewing happen only when the caller calls, so an idle caller produces zero
-   *  storage traffic. */
+   *  if another tab currently holds the lease *or* the arbitration lock itself couldn't be
+   *  acquired within `waitTimeoutMs` (default `ttlMs`) — both mean "not confirmed as leader
+   *  this call," so both resolve null rather than one of them rejecting. A wait running past
+   *  half of `waitTimeoutMs` (capped at 5s) logs a warning once per gate instance — the only
+   *  visibility into a wedged holder, since this never throws for it. No timers — claiming and
+   *  renewing happen only when the caller calls, so an idle caller produces zero storage
+   *  traffic. */
   acquire(): Promise<Tenure | null>
   /** Synchronous, best-effort: aborts the current tenure immediately, and writes an expired
    *  tombstone (not a deletion, so the fence keeps strictly increasing) so another tab can
@@ -135,7 +157,45 @@ export function createLeadershipGate(storageKey: string, ttlMs: number, options?
     listening = true
   }
 
-  const claim = () => withTabLock(lockName, () => claimer.claim(ownerId), { waitTimeoutMs })
+  let hasWarnedSlowWait = false
+
+  const claim = (): Promise<PollLeaseClaimResult> => {
+    // Scheduled fresh on every call (cleared as soon as this call settles) but only while
+    // nobody's been warned yet — once the caller has seen it, repeating it every claim/renewal
+    // for the gate's whole lifetime would just be noise, not new information.
+    const warnAfterMs = Math.min(waitTimeoutMs / 2, SLOW_WAIT_WARN_MS)
+    const warnTimer =
+      logger && !hasWarnedSlowWait
+        ? setTimeout(() => {
+            hasWarnedSlowWait = true
+            try {
+              logger.warn(
+                `cross-tab-kit: createLeadershipGate is still waiting for the arbitration lock after ${warnAfterMs}ms — possibly queued behind a stuck holder`,
+              )
+            } catch {
+              // A diagnostic channel must never take down the code path it's diagnosing.
+            }
+          }, warnAfterMs)
+        : undefined
+    const clearWarnTimer = () => {
+      if (warnTimer !== undefined) clearTimeout(warnTimer)
+    }
+    return withTabLock(lockName, () => claimer.claim(ownerId), { waitTimeoutMs }).then(
+      (result) => {
+        clearWarnTimer()
+        return result
+      },
+      (error: unknown) => {
+        clearWarnTimer()
+        // The wait for the arbitration lock is bounded the same way "someone else holds the
+        // lease" already is — both are just "not confirmed as leader this call" to every
+        // caller here (acquire(), isStillValid()), so this degrades the same way instead of
+        // rejecting. The warning above (not an exception) is this case's visibility.
+        if (isArbitrationWaitTimeout(error)) return { leader: false as const }
+        throw error
+      },
+    )
+  }
   // Best-effort, fire-and-forget by design (see `release()` below) — shared so the same
   // tombstone-write path backs both the public `release()` and the zombie-lease cleanup in
   // `isStillValid()`.
