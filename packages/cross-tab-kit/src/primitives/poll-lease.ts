@@ -1,13 +1,17 @@
 import { now } from "../kernel/clock"
-import { type Logger, resolveLogger, warnOnInvalidTtl } from "../kernel/logger"
+import { assertPositiveFiniteMs, type Logger } from "../kernel/logger"
 import { createStorageCell } from "../kernel/storage-cell"
 
 export interface PollLeaseClaimerOptions {
-  /** Diagnostic-warning channel for the invalid-`ttlMs` warning below. Defaults to `console`. */
+  /** Reserved for future diagnostics — currently unused: construction-time misconfiguration
+   *  (an invalid `ttlMs`) throws a `RangeError` rather than warning through a logger. */
   logger?: Logger
 }
 
-interface PollLeaseRecord {
+/** Not part of the public API — exported only for `leadership-gate.ts` to reuse for its
+ *  `storage` event validation, so "is this a structurally valid lease record" has exactly
+ *  one implementation instead of two that can drift apart. */
+export interface PollLeaseRecord {
   ownerId: string
   /** Monotonically increasing generation number for this lease. Bumped on every claim that
    *  isn't a plain renewal of the same still-valid tenure (i.e. whenever the previous holder was
@@ -58,7 +62,7 @@ export interface PollLeaseClaimer {
   release(ownerId: string): void
 }
 
-function validateLeaseRecord(parsed: unknown): PollLeaseRecord | null {
+export function validateLeaseRecord(parsed: unknown): PollLeaseRecord | null {
   if (!parsed || typeof parsed !== "object") return null
   const record = parsed as Partial<PollLeaseRecord>
   // Non-finite numbers are rejected too: JSON can't spell NaN/Infinity, but an out-of-range
@@ -84,7 +88,8 @@ function validateLeaseRecord(parsed: unknown): PollLeaseRecord | null {
  * over. See `PollLeaseClaimer.release` for why this matters.
  */
 export function createPollLeaseClaimer(storageKey: string, ttlMs: number, options?: PollLeaseClaimerOptions): PollLeaseClaimer {
-  warnOnInvalidTtl(resolveLogger(options?.logger), "createPollLeaseClaimer", ttlMs)
+  void options // reserved — see PollLeaseClaimerOptions
+  assertPositiveFiniteMs(ttlMs, "createPollLeaseClaimer", "ttlMs")
   const cell = createStorageCell<PollLeaseRecord>(storageKey, { validate: validateLeaseRecord })
 
   // A write failing (quota exceeded, private-mode Safari, storage disabled) is deliberately not

@@ -1,4 +1,4 @@
-import { type Logger, resolveLogger } from "../kernel/logger"
+import { assertPositiveFiniteMs, type Logger, resolveLogger } from "../kernel/logger"
 import {
   createLeadershipGate,
   TENURE_RELEASED_REASON,
@@ -19,8 +19,10 @@ export interface LeadershipContext {
 }
 
 export interface LeadershipLoopOptions extends LeadershipGateOptions {
-  /** How often to claim/renew. Defaults to `ttlMs / 3`, with no artificial floor — see the
-   *  note on background throttling below before choosing a short TTL. */
+  /** How often to claim/renew. Defaults to `ttlMs / 3`. Must be positive, finite, and strictly
+   *  less than `ttlMs` — a renewal interval at or past the TTL lets the lease lapse between
+   *  renewals, so leadership flaps between tabs. See the note on background throttling below
+   *  before choosing a short TTL. */
   renewIntervalMs?: number
   /** Register a `pagehide` listener that releases the lease on a graceful page exit, so the
    *  next leader doesn't wait out the TTL. Default true. Best-effort: a crash or kill fires
@@ -61,7 +63,21 @@ export function createLeadershipLoop(
   options?: LeadershipLoopOptions,
 ): () => void {
   const logger = resolveLogger(options?.logger)
-  const gate: LeadershipGate = createLeadershipGate(storageKey, ttlMs, { lockName: options?.lockName, logger: options?.logger })
+  // Invalid ttlMs throws here, via the gate's claimer — a misconfiguration, not a runtime
+  // condition, so construction fails fast instead of electing no one (or everyone) silently.
+  const gate: LeadershipGate = createLeadershipGate(storageKey, ttlMs, {
+    lockName: options?.lockName,
+    waitTimeoutMs: options?.waitTimeoutMs,
+    logger: options?.logger,
+  })
+  if (options?.renewIntervalMs !== undefined) {
+    assertPositiveFiniteMs(options.renewIntervalMs, "createLeadershipLoop", "renewIntervalMs")
+    if (options.renewIntervalMs >= ttlMs) {
+      throw new RangeError(
+        `cross-tab-kit: createLeadershipLoop's renewIntervalMs (${options.renewIntervalMs}ms) must be less than ttlMs (${ttlMs}ms) — otherwise the lease lapses between renewals and leadership flaps between tabs`,
+      )
+    }
+  }
   const renewIntervalMs = options?.renewIntervalMs ?? ttlMs / 3
   let stopped = false
   let ticking = false

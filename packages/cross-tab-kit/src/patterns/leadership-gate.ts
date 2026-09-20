@@ -1,6 +1,6 @@
-import type { Logger } from "../kernel/logger"
+import { assertPositiveFiniteMs, type Logger, resolveLogger } from "../kernel/logger"
 import { withTabLock } from "../locks/tab-lock"
-import { createPollLeaseClaimer, generatePollOwnerId } from "../primitives/poll-lease"
+import { createPollLeaseClaimer, generatePollOwnerId, validateLeaseRecord } from "../primitives/poll-lease"
 
 /**
  * One tenure of leadership handed out by `LeadershipGate.acquire`. Capture `fence` with the
@@ -16,14 +16,20 @@ export interface Tenure {
    *  after-the-fact result discarding. */
   readonly signal: AbortSignal
   /** Locked re-claim + fence comparison — and a renewal when it returns true, so re-checking
-   *  also extends the tenure. False means this tenure is over; discard anything in flight. */
+   *  also extends the tenure. False means this tenure is over; discard anything in flight.
+   *  Rejects with a `TimeoutError` if the arbitration lock wait exceeds `waitTimeoutMs`. */
   isStillValid(): Promise<boolean>
 }
 
 export interface LeadershipGateOptions {
   /** Name of the Web Locks mutex claims are serialized through. Defaults to `storageKey`. */
   lockName?: string
-  /** Diagnostic-warning channel (invalid `ttlMs`). Defaults to `console`. */
+  /** How long a claim waits for the arbitration lock before the acquire rejects with a
+   *  `TimeoutError`. Defaults to `ttlMs` — waiting longer than the lease itself is never
+   *  useful: even if the wait succeeded, the claimed lease would start out that much closer
+   *  to expiry. */
+  waitTimeoutMs?: number
+  /** Diagnostic-warning channel (the very-short-`ttlMs` warning below). Defaults to `console`. */
   logger?: Logger
 }
 
@@ -34,8 +40,10 @@ export const TENURE_RELEASED_REASON = "cross-tab-kit:tenure-released"
 
 export interface LeadershipGate {
   /** Claims leadership right now: resolves to a `Tenure` if this gate is the leader, or null
-   *  if another tab currently holds the lease. No timers — claiming and renewing happen only
-   *  when the caller calls, so an idle caller produces zero storage traffic. */
+   *  if another tab currently holds the lease. Rejects with a `TimeoutError` if the
+   *  arbitration lock can't be acquired within `waitTimeoutMs` (default `ttlMs`). No timers —
+   *  claiming and renewing happen only when the caller calls, so an idle caller produces zero
+   *  storage traffic. */
   acquire(): Promise<Tenure | null>
   /** Synchronous, best-effort: aborts the current tenure immediately, and writes an expired
    *  tombstone (not a deletion, so the fence keeps strictly increasing) so another tab can
@@ -60,7 +68,24 @@ export interface LeadershipGate {
  * (Frozen tabs get their events queued until they unfreeze, which is still safe.)
  */
 export function createLeadershipGate(storageKey: string, ttlMs: number, options?: LeadershipGateOptions): LeadershipGate {
-  const claimer = createPollLeaseClaimer(storageKey, ttlMs, { logger: options?.logger })
+  // Invalid ttlMs throws here, via the claimer — a misconfiguration, surfaced at construction.
+  const claimer = createPollLeaseClaimer(storageKey, ttlMs)
+  const logger = resolveLogger(options?.logger)
+  if (ttlMs < 1_000 && logger) {
+    // Not an error, but worth one warning: a sub-second TTL means every acquire/re-check is a
+    // storage write, and every write fires a storage event in every other open tab — the cost
+    // scales with tab count, not with work done.
+    try {
+      logger.warn(
+        `cross-tab-kit: createLeadershipGate's ttlMs of ${ttlMs}ms is very short — every claim and renewal is a storage write that fires a storage event in every other tab`,
+      )
+    } catch {
+      // A diagnostic channel must never take down the code path it's diagnosing — see `Logger`.
+    }
+  }
+  const waitTimeoutMs = options?.waitTimeoutMs ?? ttlMs
+  // Same contract as withTabLock's: positive finite, or Infinity to wait without a bound.
+  if (waitTimeoutMs !== Infinity) assertPositiveFiniteMs(waitTimeoutMs, "createLeadershipGate", "waitTimeoutMs")
   const ownerId = generatePollOwnerId()
   const lockName = options?.lockName ?? storageKey
   let active: { tenure: Tenure; controller: AbortController } | null = null
@@ -88,11 +113,15 @@ export function createLeadershipGate(storageKey: string, ttlMs: number, options?
       return
     }
     try {
-      const parsed = JSON.parse(event.newValue) as { ownerId?: unknown } | null
-      // Only "the lease is now someone else's" ends this tenure; unparseable values are
-      // ignored rather than trusted (a garbage record reads as unheld on the next claim
-      // anyway, so nothing is lost by waiting for that).
-      if (parsed && typeof parsed === "object" && typeof parsed.ownerId === "string" && parsed.ownerId !== ownerId) {
+      // Reuse claim()'s own validator (fence/expiresAt must be finite too) rather than a
+      // hand-rolled, looser shape check — otherwise a malformed rival write could trip this
+      // listener into a false "taken from me" that claimer.claim() itself would have ignored
+      // as garbage on the very next re-check.
+      const record = validateLeaseRecord(JSON.parse(event.newValue))
+      // Only "the lease is now someone else's" ends this tenure; unparseable/invalid values are
+      // ignored rather than trusted (a garbage record reads as unheld on the next claim anyway,
+      // so nothing is lost by waiting for that).
+      if (record && record.ownerId !== ownerId) {
         abortActive()
       }
     } catch {
@@ -106,7 +135,11 @@ export function createLeadershipGate(storageKey: string, ttlMs: number, options?
     listening = true
   }
 
-  const claim = () => withTabLock(lockName, () => claimer.claim(ownerId))
+  const claim = () => withTabLock(lockName, () => claimer.claim(ownerId), { waitTimeoutMs })
+  // Best-effort, fire-and-forget by design (see `release()` below) — shared so the same
+  // tombstone-write path backs both the public `release()` and the zombie-lease cleanup in
+  // `isStillValid()`.
+  const releaseLease = () => withTabLock(lockName, () => claimer.release(ownerId), { waitTimeoutMs }).catch(() => undefined)
 
   return {
     async acquire() {
@@ -125,9 +158,28 @@ export function createLeadershipGate(storageKey: string, ttlMs: number, options?
         fence: result.fence,
         signal: controller.signal,
         isStillValid: async () => {
+          // Captured before the re-claim below can change it: telling "this is the tenure the
+          // gate currently considers active" apart from "this is a stale tenure someone kept a
+          // reference to after a newer `acquire()` superseded it" is exactly what distinguishes
+          // the zombie-lease case from an ordinary stale re-check below.
+          const wasActive = active?.tenure === tenure
           const recheck = await claim()
           const valid = recheck.leader && recheck.fence === tenure.fence
-          if (!valid && active?.tenure === tenure) abortActive()
+          if (!valid) {
+            if (wasActive) abortActive()
+            // `claim()` can't tell "renewing this tenure" apart from "this tab's own prior
+            // lease had already expired and this call silently started a brand-new one" — both
+            // come back `{ leader: true }`, just with a bumped fence in the second case. When
+            // that lands here for the tenure the gate still considers active (`wasActive`), it
+            // means this tab is now the live lease holder again, under its own ownerId, for a
+            // tenure nobody asked for and isStillValid() is about to report as lost — release it
+            // immediately, or this tab sits on a lease nobody's using and every other tab's
+            // `acquire()` reads it as still held, waiting out a full extra `ttlMs` before anyone
+            // can take over. A stale tenure re-checked after a newer `acquire()` already
+            // superseded it (`!wasActive`) is a different, harmless case — `recheck` there just
+            // reports the newer, legitimately active tenure, which must not be released.
+            if (wasActive && recheck.leader) await releaseLease()
+          }
           return valid
         },
       }
@@ -142,7 +194,7 @@ export function createLeadershipGate(storageKey: string, ttlMs: number, options?
       // overwrite its fresh lease with a stale-fence tombstone (a dual-leader window and a
       // reused fence). Fire-and-forget keeps the signature synchronous; the write lands on
       // a later microtask — if the page dies before that, the TTL is the fallback.
-      void withTabLock(lockName, () => claimer.release(ownerId)).catch(() => undefined)
+      void releaseLease()
       if (listening) {
         window.removeEventListener("storage", onStorage)
         listening = false

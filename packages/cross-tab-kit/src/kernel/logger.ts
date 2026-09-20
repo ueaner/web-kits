@@ -10,18 +10,15 @@ export function resolveLogger(logger?: Logger): Logger | undefined {
   return logger ?? (typeof console !== "undefined" ? console : undefined)
 }
 
-/** Shared validation for the `ttlMs` every TTL-based primitive takes: it must be a positive
- *  finite number. A non-positive TTL makes every claim expire before (or the instant) it's
- *  written, so coordination silently stops coordinating. NaN behaves the same way. Infinity
- *  is worse: the entry never expires, so if the holding tab dies without releasing, no other
- *  tab can ever take over — the exact failure a TTL exists to prevent. None of these is
- *  fatal (best-effort coordination just degrades), but all are almost certainly
- *  misconfigurations, so it's worth flagging at the point it's easiest to notice. */
-export function warnOnInvalidTtl(logger: Logger | undefined, apiName: string, ttlMs: number): void {
-  if ((Number.isFinite(ttlMs) && ttlMs > 0) || !logger) return
-  try {
-    logger.warn(`cross-tab-kit: ${apiName}'s ttlMs must be a positive finite number, got ${ttlMs}`)
-  } catch {
-    // A diagnostic channel must never take down the code path it's diagnosing — see `Logger`.
+/** Fail-fast validation for the millisecond configuration every primitive takes: it must be
+ *  a positive finite number. A non-positive TTL makes every claim expire before (or the
+ *  instant) it's written, so coordination silently stops coordinating; NaN behaves the same
+ *  way; Infinity never expires, so a holder that dies without releasing blocks every other
+ *  tab forever — the exact failure a TTL exists to prevent. These are misconfigurations, not
+ *  runtime conditions, so they throw at construction (or call) time — surfaced on the app's
+ *  first start or first test — rather than degrading silently. */
+export function assertPositiveFiniteMs(value: number, apiName: string, paramName: string): void {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new RangeError(`cross-tab-kit: ${apiName}'s ${paramName} must be a positive finite number, got ${value}`)
   }
 }

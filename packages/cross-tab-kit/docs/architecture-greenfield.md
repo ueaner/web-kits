@@ -93,15 +93,16 @@ options 用到它,两个入口都导出)。
 两个函数,语义与返回类型一一对应,不靠重载:
 
 ```ts
-// 等待型:排队拿锁,拿到后执行
+// 等待型:排队拿锁,拿到后执行。options 必传——waitTimeoutMs(等锁上限)不许缺省,
+// 强制调用方显式做权衡;传 Infinity 表示刻意无限等
 export function withTabLock<T>(
   name: string,
   operation: (ctx: TabLockContext) => Promise<T> | T,
-  options?: { signal?: AbortSignal; timeoutMs?: number },
+  options: { signal?: AbortSignal; timeoutMs?: number; waitTimeoutMs: number },
 ): Promise<T>
 
 // 跳过型:拿不到就跳过(S1 的正确语义——排队锁在 token 刷新场景是错的:
-// 每个 tab 排队各刷一次,刷新接口会被服务端限流)
+// 每个 tab 排队各刷一次,刷新接口会被服务端限流)。不排队,所以没有 waitTimeoutMs
 export type TabLockResult<T> = { acquired: true; value: T } | { acquired: false }
 export function tryWithTabLock<T>(
   name: string,
@@ -260,7 +261,9 @@ export interface LeadershipContext {
 
 export interface LeadershipLoopOptions {
   lockName?: string // 默认 = storageKey
-  renewIntervalMs?: number // 默认 ttlMs / 3,不设人工下限
+  renewIntervalMs?: number // 默认 ttlMs / 3;必须正有限且 < ttlMs(否则构造期 RangeError:
+  //   租约会在两次续租间过期,领导权 flap)
+  waitTimeoutMs?: number // 继承自 gate:单次 claim 的等锁上限,默认 ttlMs
   releaseOnExit?: boolean // 默认 true;pagehide 尽力 release
   onLeadershipLost?: () => void
   logger?: Logger

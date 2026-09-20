@@ -1,5 +1,5 @@
 import { now } from "../kernel/clock"
-import { type Logger, resolveLogger, warnOnInvalidTtl } from "../kernel/logger"
+import { assertPositiveFiniteMs, type Logger } from "../kernel/logger"
 import { createMapStorageCell } from "../kernel/storage-cell"
 
 interface TtlDedupeEntry {
@@ -13,12 +13,14 @@ export interface TtlDedupeCache {
 }
 
 export interface TtlDedupeCacheOptions {
-  /** Diagnostic-warning channel for the invalid-`ttlMs` warning below. Defaults to `console`. */
+  /** Reserved for future diagnostics — currently unused: construction-time misconfiguration
+   *  (an invalid `ttlMs` or `maxEntries`) throws a `RangeError` rather than warning through a
+   *  logger. */
   logger?: Logger
   /** Upper bound on live entries: once a `claim` would exceed it, the entries with the oldest
    *  `claimedAt` are evicted. Unbounded by default — an unbounded cache backed by storage with
    *  a full quota degrades to silently not deduping, which a bound turns into bounded
-   *  forgetting instead. */
+   *  forgetting instead. Must be an integer >= 1 if provided. */
   maxEntries?: number
 }
 
@@ -28,15 +30,22 @@ export interface TtlDedupeCacheOptions {
  * tabs race to process the same id.
  */
 export function createTtlDedupeCache(storageKey: string, ttlMs: number, options?: TtlDedupeCacheOptions): TtlDedupeCache {
-  warnOnInvalidTtl(resolveLogger(options?.logger), "createTtlDedupeCache", ttlMs)
+  assertPositiveFiniteMs(ttlMs, "createTtlDedupeCache", "ttlMs")
+  // A silently-ignored invalid bound (the old behavior) is how "bounded" caches quietly grow
+  // unbounded — a misconfiguration, so it throws at construction like an invalid ttlMs.
+  if (options?.maxEntries !== undefined && (!Number.isInteger(options.maxEntries) || options.maxEntries < 1)) {
+    throw new RangeError(`cross-tab-kit: createTtlDedupeCache's maxEntries must be an integer >= 1, got ${options.maxEntries}`)
+  }
+  const maxEntries = options?.maxEntries
   const cell = createMapStorageCell<TtlDedupeEntry>(storageKey, {
-    // A non-finite claimedAt is rejected too: an Infinity could never age out, pinning the id
-    // as "claimed" forever.
-    validateEntry: (entry) =>
-      entry && typeof entry === "object" && typeof (entry as TtlDedupeEntry).claimedAt === "number" ? (entry as TtlDedupeEntry) : null,
+    // A non-finite claimedAt is rejected too: JSON can't spell Infinity directly, but an
+    // out-of-range literal like 1e999 parses to it — and an Infinity claimedAt could never
+    // age out, pinning the id as "claimed" forever.
+    validateEntry: (entry) => {
+      const claimedAt = entry && typeof entry === "object" ? (entry as TtlDedupeEntry).claimedAt : undefined
+      return typeof claimedAt === "number" && Number.isFinite(claimedAt) ? (entry as TtlDedupeEntry) : null
+    },
   })
-  const maxEntries =
-    options?.maxEntries !== undefined && Number.isInteger(options.maxEntries) && options.maxEntries >= 1 ? options.maxEntries : undefined
 
   const prune = (stored: Map<string, TtlDedupeEntry>, at: number): Map<string, TtlDedupeEntry> => {
     const next = new Map<string, TtlDedupeEntry>()

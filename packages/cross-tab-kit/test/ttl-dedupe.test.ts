@@ -66,14 +66,21 @@ describe("createTtlDedupeCache", () => {
     expect(cache.claim("b")).toBe(true)
   })
 
-  it("warns via a custom logger on an invalid ttlMs", () => {
-    const warn = vi.fn()
+  it("treats an entry with a non-finite claimedAt (e.g. 1e999 → Infinity) as unreadable garbage", () => {
+    // Written as a raw JSON string: JSON.stringify would serialize Infinity as null, but an
+    // out-of-range literal in hand-edited storage parses to Infinity — the case under test.
+    localStorage.setItem("dedupe-infinite", '{"a":{"claimedAt":1e999}}')
+    const cache = createTtlDedupeCache("dedupe-infinite", 60_000)
 
-    createTtlDedupeCache("dedupe-ttl-zero", 0, { logger: { warn } })
-    createTtlDedupeCache("dedupe-ttl-inf", Infinity, { logger: { warn } })
+    // An Infinity claimedAt could never age out — accepting the entry would pin "a" as
+    // claimed forever, permanently defeating dedup for that id.
+    expect(cache.claim("a")).toBe(true)
+  })
 
-    expect(warn).toHaveBeenCalledTimes(2)
-    expect(warn.mock.calls[0]?.[0]).toContain("ttlMs")
+  it("throws RangeError at construction on an invalid ttlMs", () => {
+    expect(() => createTtlDedupeCache("dedupe-ttl-zero", 0)).toThrow(RangeError)
+    expect(() => createTtlDedupeCache("dedupe-ttl-inf", Infinity)).toThrow(RangeError)
+    expect(() => createTtlDedupeCache("dedupe-ttl-nan", NaN)).toThrow(RangeError)
   })
 
   it("doesn't rewrite storage on a repeat claim when nothing expired", () => {
@@ -221,10 +228,13 @@ describe("TtlDedupeCache maxEntries", () => {
     expect(cache.has("a")).toBe(true)
   })
 
-  it("ignores an unusable maxEntries and stays unbounded", () => {
-    const cache = createTtlDedupeCache("dedupe-bound-invalid", 60_000, { maxEntries: 0 })
-
-    for (let i = 0; i < 5; i++) expect(cache.claim(`id-${i}`)).toBe(true)
-    for (let i = 0; i < 5; i++) expect(cache.has(`id-${i}`)).toBe(true)
+  it("throws RangeError at construction on an unusable maxEntries", () => {
+    // Used to be silently ignored — a "bounded" cache quietly growing unbounded is exactly
+    // the misconfiguration maxEntries exists to prevent, so it now fails fast.
+    expect(() => createTtlDedupeCache("dedupe-bound-zero", 60_000, { maxEntries: 0 })).toThrow(RangeError)
+    expect(() => createTtlDedupeCache("dedupe-bound-neg", 60_000, { maxEntries: -1 })).toThrow(RangeError)
+    expect(() => createTtlDedupeCache("dedupe-bound-frac", 60_000, { maxEntries: 1.5 })).toThrow(RangeError)
+    expect(() => createTtlDedupeCache("dedupe-bound-nan", 60_000, { maxEntries: NaN })).toThrow(RangeError)
+    expect(() => createTtlDedupeCache("dedupe-bound-ok", 60_000, { maxEntries: 1 })).not.toThrow()
   })
 })

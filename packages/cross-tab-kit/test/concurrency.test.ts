@@ -47,7 +47,7 @@ describe("concurrency playbooks", () => {
   it("try-lock colliding with a holder skips instead of queueing", async () => {
     const locks = installFakeLocks()
     let releaseHolder!: () => void
-    void withTabLock("race-try", () => new Promise<void>((resolve) => (releaseHolder = resolve)))
+    void withTabLock("race-try", () => new Promise<void>((resolve) => (releaseHolder = resolve)), { waitTimeoutMs: 10_000 })
     await vi.waitFor(() => expect(locks.isHeld("race-try")).toBe(true))
 
     await expect(tryWithTabLock("race-try", () => "should not run")).resolves.toEqual({ acquired: false })
@@ -67,7 +67,7 @@ describe("concurrency playbooks", () => {
             firstOpSettled = true
             return value
           }),
-        { timeoutMs: 100 },
+        { timeoutMs: 100, waitTimeoutMs: 10_000 },
       )
       const firstAssertion = expect(first).rejects.toMatchObject({ name: "TimeoutError" })
       await world.flush()
