@@ -1,8 +1,7 @@
-import { createPollLeaseClaimer, generatePollOwnerId, type PollLeaseClaimer, type PollLeaseClaimResult } from "./poll-lease"
+import { createPollLeaseClaimer, generatePollOwnerId, withTabLock, type PollLeaseClaimer, type PollLeaseClaimResult } from "cross-tab-kit"
 import { parseResultRelay, writeResultRelay } from "./result-relay"
 import { DEFAULT_STORAGE_KEY, DEFAULT_TTL_MS, parseTasksFromStorageValue, readPersistedTasks } from "./store"
 import type { PendingTaskStore } from "./store"
-import { withTabLock } from "./tab-lock"
 import type {
   PendingTask,
   PendingTaskCheckResult,
@@ -57,7 +56,8 @@ export interface PendingTaskPollerOptions<TType extends string = string> {
   /**
    * Optional cross-tab "claim once" gate around the final `onResult`/DOM-event dispatch
    * (task removal from the store always happens regardless). Compose `withTabLock` +
-   * `createTtlDedupeCache` here to prevent duplicate toasts when multiple tabs race to
+   * `createTtlDedupeCache` (both from `cross-tab-kit`, a separate package — not re-exported
+   * here) to prevent duplicate toasts when multiple tabs race to
    * process the same completed task. This guards `onResult`/the toast-equivalent side effect
    * specifically — it's orthogonal to `crossTabPollLeaderElection`, which is about not
    * duplicating the *polling* itself; keep both if you want both properties.

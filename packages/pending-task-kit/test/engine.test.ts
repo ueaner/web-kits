@@ -498,11 +498,11 @@ describe("PendingTaskPoller", () => {
   })
 
   // jsdom has no `navigator.locks`, so every leader-election test in this file exercises
-  // `withTabLock`'s unlocked fallback path (see `src/tab-lock.ts`), not real Web Locks
-  // arbitration — the read-then-write in `PollLeaseClaimer.claim` runs without genuine
-  // cross-tab mutual exclusion here. That's fine for these tests (jsdom is single-threaded, so
-  // there's no actual interleaving to race), but it means a real browser's Web Locks queuing
-  // behavior specifically is never exercised by this suite.
+  // `withTabLock`'s unlocked fallback path (see the tab-lock module in `cross-tab-kit`), not
+  // real Web Locks arbitration — the read-then-write in `PollLeaseClaimer.claim` runs without
+  // genuine cross-tab mutual exclusion here. That's fine for these tests (jsdom is
+  // single-threaded, so there's no actual interleaving to race), but it means a real browser's
+  // Web Locks queuing behavior specifically is never exercised by this suite.
 
   it("only lets one of two pollers sharing a store actually call check() (cross-tab leader election)", async () => {
     const store = createPendingTaskStore({ storageKey: "engine-leader-election" })

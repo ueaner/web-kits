@@ -1,4 +1,4 @@
-import { safeRemoveItem, safeSetItem } from "./safe-storage"
+import { safeRemoveItem, safeSetItem } from "cross-tab-kit"
 import { isPendingTaskShape } from "./store"
 import type { PendingTaskResultEventDetail, PendingTaskResultStatus } from "./types"
 
