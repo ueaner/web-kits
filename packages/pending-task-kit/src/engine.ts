@@ -1,4 +1,4 @@
-import { createPollLeaseClaimer, generatePollOwnerId, withTabLock, type PollLeaseClaimer, type PollLeaseClaimResult } from "cross-tab-kit"
+import { createLeadershipGate, linkAbortSignal, type LeadershipGate, type Tenure } from "cross-tab-kit"
 import { parseResultRelay, writeResultRelay } from "./result-relay"
 import { DEFAULT_STORAGE_KEY, DEFAULT_TTL_MS, parseTasksFromStorageValue, readPersistedTasks } from "./store"
 import type { PendingTaskStore } from "./store"
@@ -221,11 +221,13 @@ export class PendingTaskPoller<TType extends string = string> {
       "onResult" | "onCheckError" | "claimResultOnce" | "acceptRelayedResult" | "onLeaderChange" | "onTick"
     >
 
-  /** Stable for this instance's whole lifetime — e.g. one `PendingTaskPoller` construction per
-   *  browser tab (that's how the React binding uses it). Regenerating this per claim would make
-   *  a tab unable to recognize its own still-valid lease as "mine" on the next renewal. */
-  private readonly ownerId: string
-  private readonly pollLease: PollLeaseClaimer
+  /** Only constructed when `crossTabPollLeaderElection` is on: constructing
+   *  `createLeadershipGate` validates `pollLeaseTtlMs` and throws synchronously on an invalid
+   *  one (cross-tab-kit's fail-fast design), so a caller who's turned election off — and may
+   *  not have given `pollLeaseTtlMs` a moment's thought — shouldn't pay for that validation.
+   *  Every access to this field below lives inside a `crossTabPollLeaderElection` check, which
+   *  is the invariant that makes the non-null assertions at those call sites safe. */
+  private readonly gate: LeadershipGate | undefined
 
   private intervalId: ReturnType<typeof setInterval> | undefined
   private storageListener: ((event: StorageEvent) => void) | undefined
@@ -234,8 +236,9 @@ export class PendingTaskPoller<TType extends string = string> {
   private stopped = false
   private latestTasksCache: { tasks: PendingTask<TType>[]; byId: Map<string, PendingTask<TType>> } | undefined
   /** This tab's own most recently reported leadership status, for `onLeaderChange` — tracked
-   *  here (rather than derived fresh each time from `fence`) purely so that callback fires only
-   *  on an actual flip, not once per tick it happens to still hold/still lack leadership. */
+   *  here (rather than derived fresh each time from the current tenure) purely so that callback
+   *  fires only on an actual flip, not once per tick it happens to still hold/still lack
+   *  leadership. */
   private isLeaderTab = false
   /** The `AbortController` backing whichever `handler.check()` call is currently in flight, if
    *  any — reachable from `stop()` (a synchronous method with no other way to reach into an
@@ -286,10 +289,9 @@ export class PendingTaskPoller<TType extends string = string> {
       onLeaderChange: options.onLeaderChange,
       onTick: options.onTick,
     }
-    this.ownerId = generatePollOwnerId()
-    this.pollLease = createPollLeaseClaimer(this.options.pollLeaseKey, this.options.pollLeaseTtlMs, {
-      logger: this.options.logger,
-    })
+    this.gate = this.options.crossTabPollLeaderElection
+      ? createLeadershipGate(this.options.pollLeaseKey, this.options.pollLeaseTtlMs, { logger: this.options.logger })
+      : undefined
   }
 
   start(): void {
@@ -383,11 +385,11 @@ export class PendingTaskPoller<TType extends string = string> {
       this.storageListener = undefined
     }
     if (this.options.crossTabPollLeaderElection) {
-      // Best-effort and not awaited — stop() is a synchronous API. If this never lands (page
-      // unloading right now, storage disabled), the lease just expires on its own TTL instead
-      // of being released early; see PollLeaseClaimer.release's doc comment for why that's
-      // still safe rather than blocking every other tab.
-      void this.releaseLeadership().catch(() => undefined)
+      // Synchronous, best-effort tombstone write (see `LeadershipGate.release`'s doc comment).
+      // If it never lands (page unloading right now, storage disabled), the lease just expires
+      // on its own TTL instead of being released early — same tradeoff as before, just no
+      // longer needing a `.catch()` since this is no longer a rejectable async call.
+      this.gate!.release()
       this.setLeaderStatus(false)
     }
   }
@@ -395,10 +397,6 @@ export class PendingTaskPoller<TType extends string = string> {
   /** Re-check every tracked task right now, bypassing each task's poll interval (e.g. on tab focus). */
   forceCheckAll(): void {
     this.runTickSafely(true)
-  }
-
-  private claimLeadership(): Promise<PollLeaseClaimResult> {
-    return withTabLock(this.options.pollLeaseKey, () => this.pollLease.claim(this.ownerId))
   }
 
   /** Updates `isLeaderTab` and fires `onLeaderChange`, but only on an actual flip — see that
@@ -424,25 +422,18 @@ export class PendingTaskPoller<TType extends string = string> {
 
   /**
    * Re-confirms that poll leadership is still this tab's — and still the *same continuous
-   * tenure* as when `fence` was captured, not just "is nobody else currently holding it" (a
-   * no-op returning `fence` unchanged when `crossTabPollLeaderElection` is off). Clears `task`'s
+   * tenure* `tenure` represents, not just "is nobody else currently holding it" (a no-op
+   * returning `tenure` unchanged when `crossTabPollLeaderElection` is off). Clears `task`'s
    * `finalCheckAttempted` bookkeeping and returns `false` if not — the caller should stop
    * treating this tick's remaining due tasks as network-eligible (though it may still process
    * ones that need no leadership) rather than act on a possibly-stale outcome.
    *
-   * A fence mismatch (rather than just an owner-id mismatch) is needed to catch leadership
-   * having churned through another tab and back to this one while a slow `handler.check()` was
-   * in flight: this tab's lease can expire mid-check, another tab claims it and fully resolves
-   * the same task, and that tab's own lease can *also* expire before this tab's stale response
-   * comes back — at which point this tab's next claim legitimately succeeds under its own
-   * stable owner id (nothing currently holds the lease), even though leadership genuinely
-   * changed hands in between. See `PollLeaseClaimResult`.
+   * Delegates the actual comparison to `Tenure.isStillValid()` (a locked re-claim + fence
+   * comparison, renewing on success) — see its doc comment for why a fence mismatch, not just
+   * an owner-id mismatch, is needed to catch leadership having churned through another tab and
+   * back to this one while a slow `handler.check()` was in flight.
    */
-  private async reconfirmLeadership(
-    task: PendingTask<TType>,
-    expired: boolean,
-    fence: number | undefined,
-  ): Promise<number | undefined | false> {
+  private async reconfirmLeadership(task: PendingTask<TType>, expired: boolean, tenure: Tenure | null): Promise<Tenure | null | false> {
     if (this.stopped) {
       // Checked *before* the crossTabPollLeaderElection early-return below, deliberately: a
       // stopped poller's `stop()` unconditionally aborts whatever `handler.check()` call is
@@ -452,7 +443,7 @@ export class PendingTaskPoller<TType extends string = string> {
       // same way an election-on stale response would be — treating a self-inflicted abort as a
       // real `check()` failure would wrongly bump `failureCount`, run `onCheckError`, and could
       // even dispatch `onResult` on an already-stopped poller. Reordering these two checks was
-      // the actual fix for that bug — returning `fence` (not `false`) here first, unconditional
+      // the actual fix for that bug — returning `tenure` (not `false`) here first, unconditional
       // on `stopped`, is what let it happen.
       //
       // Also means `stop()` has already (best-effort) released this tab's own lease when
@@ -463,26 +454,23 @@ export class PendingTaskPoller<TType extends string = string> {
       if (expired) this.finalCheckAttempted.delete(task.id)
       return false
     }
-    if (!this.options.crossTabPollLeaderElection) return fence
-    let result: PollLeaseClaimResult
+    if (!this.options.crossTabPollLeaderElection) return tenure
+    // `tenure` is guaranteed non-null here: the pre-check block in `runTick` only ever lets a
+    // task reach `handler.check()` (and thus this reconfirm) once it has successfully claimed
+    // one for this tick.
+    let stillValid: boolean
     try {
-      result = await this.claimLeadership()
+      stillValid = await tenure!.isStillValid()
     } catch (error) {
-      // A rejected claim (e.g. `navigator.locks.request` itself throwing) must not leave this
-      // task's finalCheckAttempted entry dangling past this tick — surface the error the same
-      // way as before, just without leaking that bookkeeping first.
+      // A rejected re-check (e.g. `navigator.locks.request` itself throwing) must not leave
+      // this task's finalCheckAttempted entry dangling past this tick — surface the error the
+      // same way as before, just without leaking that bookkeeping first.
       if (expired) this.finalCheckAttempted.delete(task.id)
       throw error
     }
-    if (result.leader && result.fence === fence) return result.fence
+    if (stillValid) return tenure
     if (expired) this.finalCheckAttempted.delete(task.id)
     return false
-  }
-
-  private releaseLeadership(): Promise<void> {
-    return withTabLock(this.options.pollLeaseKey, () => {
-      this.pollLease.release(this.ownerId)
-    })
   }
 
   /** Fires `runTick`, but instead of leaving its promise `void`-called (which would turn an
@@ -656,11 +644,13 @@ export class PendingTaskPoller<TType extends string = string> {
     try {
       // Claimed lazily by the first task in this tick that actually needs leadership, then
       // carried forward for the rest of the tick: every task that reaches its own check()
-      // re-confirms (and thereby renews) leadership right after, updating `fence` for whichever
-      // task comes next, so a later task in the same tick can trust that renewal instead of
-      // claiming again immediately beforehand — see the reconfirms below. Stays `undefined` for
-      // the whole tick when `crossTabPollLeaderElection` is off.
-      let fence: number | undefined
+      // re-confirms (and thereby renews) `tenure` right after, so a later task in the same tick
+      // can trust that renewal instead of claiming again immediately beforehand — see the
+      // reconfirms below. Stays `null` for the whole tick when `crossTabPollLeaderElection` is
+      // off. Not reset between ticks (a fresh `null` here every tick just means "haven't
+      // claimed *this* tick yet") — `this.gate` itself remembers the actual active tenure
+      // across ticks, so re-acquiring below transparently renews it rather than starting over.
+      let tenure: Tenure | null = null
       // Set once any leadership check fails this tick (claim refused, a fence mismatch, or this
       // poller having been stop()ped mid-tick) so every later due task skips straight past its
       // own leadership check instead of redundantly re-attempting one that can only fail the
@@ -751,31 +741,31 @@ export class PendingTaskPoller<TType extends string = string> {
         // network work — tasks skipped above by the cheap local judgments never touch this,
         // so they don't cost a localStorage round trip or a cross-tab storage-event broadcast
         // just because this tick happened to scan past them. Only the first such task in a tick
-        // claims here; every task's post-check reconfirm below already renews the lease (and its
-        // fence) for whichever task comes next, so re-claiming again immediately beforehand would
-        // just be a redundant localStorage write. Losing the lease here means another tab has
-        // already taken over (or this poller has itself been stopped) — skip this and every
-        // later due task's network work for the rest of the tick (a new leader, if any, will
-        // pick up where this tab left off on its own schedule) without abandoning the tasks
-        // after it that need no leadership at all.
+        // claims here; every task's post-check reconfirm below already renews `tenure` for
+        // whichever task comes next, so re-claiming again immediately beforehand would just be
+        // a redundant localStorage write. Losing the lease here means another tab has already
+        // taken over (or this poller has itself been stopped) — skip this and every later due
+        // task's network work for the rest of the tick (a new leader, if any, will pick up
+        // where this tab left off on its own schedule) without abandoning the tasks after it
+        // that need no leadership at all.
         if (this.options.crossTabPollLeaderElection) {
-          // Checked unconditionally, before the `fence === undefined` gate below, not inside
-          // it: `stop()` can be called from consumer code (e.g. `onResult` calling
-          // `poller.stop()`) between two tasks in the same tick, after `fence` already holds an
-          // earlier task's still-valid claim. If this check lived inside the `fence ===
-          // undefined` branch, it would never run for that later task — `fence` being set
-          // would skip the whole block, `handler.check()` would fire anyway (its response
-          // still gets discarded by the post-check reconfirm's own `stopped` check, so no data
-          // corruption — just a wasted request this check exists to prevent).
+          // Checked unconditionally, before the `tenure === null` gate below, not inside it:
+          // `stop()` can be called from consumer code (e.g. `onResult` calling `poller.stop()`)
+          // between two tasks in the same tick, after `tenure` already holds an earlier task's
+          // still-valid claim. If this check lived inside the `tenure === null` branch, it
+          // would never run for that later task — `tenure` being set would skip the whole
+          // block, `handler.check()` would fire anyway (its response still gets discarded by
+          // the post-check reconfirm's own `stopped` check, so no data corruption — just a
+          // wasted request this check exists to prevent).
           if (leadershipLost || this.stopped) {
             leadershipLost = true
             if (expired) this.finalCheckAttempted.delete(task.id)
             continue
           }
-          if (fence === undefined) {
-            let claimed: PollLeaseClaimResult
+          if (tenure === null) {
+            let claimed: Tenure | null
             try {
-              claimed = await this.claimLeadership()
+              claimed = await this.gate!.acquire()
             } catch (error) {
               // A rejected claim must not leave this task's finalCheckAttempted entry dangling
               // past this tick — surface the error the same way as before, just without leaking
@@ -789,13 +779,13 @@ export class PendingTaskPoller<TType extends string = string> {
             // outright wrong to act on, but proceeding to call handler.check() on an
             // already-stopped poller is exactly the wasted/misleading work this whole check
             // exists to prevent.
-            if (this.stopped || !claimed.leader) {
+            if (this.stopped || !claimed) {
               leadershipLost = true
               this.setLeaderStatus(false)
               if (expired) this.finalCheckAttempted.delete(task.id)
               continue
             }
-            fence = claimed.fence
+            tenure = claimed
             this.setLeaderStatus(true)
           }
         }
@@ -807,6 +797,15 @@ export class PendingTaskPoller<TType extends string = string> {
         // outcome, so stop() never holds onto a controller for a request that already settled.
         const abortController = new AbortController()
         this.inFlightAbortController = abortController
+        // Link the current tenure's loss signal into this check's own controller: if leadership
+        // is stolen mid-request (detected the moment the thief's claim write lands, via the
+        // storage event `tenure.signal` listens for — see cross-tab-kit's `linkAbortSignal`),
+        // `handler.check()` gets a real cancellation instead of only having its response
+        // discarded after the fact by the reconfirm below. Unlinked in `finally` regardless of
+        // outcome — `tenure` is reused across many tasks/ticks (it isn't a fresh object per
+        // check), so a listener left attached here would otherwise accumulate one per check for
+        // the tenure's whole remaining lifetime.
+        const unlinkTenure = tenure ? linkAbortSignal(tenure.signal, abortController) : undefined
         try {
           result = await handler.check(task, abortController.signal)
         } catch (error) {
@@ -816,21 +815,20 @@ export class PendingTaskPoller<TType extends string = string> {
           // rejects. Re-confirm leadership before acting on what may now be a stale outcome —
           // including an error outcome, since the failure-count/finalize bookkeeping below
           // would otherwise still mutate state a new leader may have already moved past.
-          const reconfirmedOnError = await this.reconfirmLeadership(task, expired, fence)
+          const reconfirmedOnError = await this.reconfirmLeadership(task, expired, tenure)
           if (reconfirmedOnError === false) {
-            // Reset `fence` to `undefined`, not just `leadershipLost = true`: the pre-check
-            // block above only runs its `leadershipLost` short-circuit while `fence ===
-            // undefined` (its normal signal for "haven't claimed yet this tick"). Leaving
-            // `fence` at its old, now-stale value would make that condition false for every
-            // later task, skipping the short-circuit entirely and letting them call
-            // handler.check() despite `leadershipLost` — exactly the redundant network work
-            // that flag exists to prevent.
+            // Reset `tenure` to `null`, not just `leadershipLost = true`: the pre-check block
+            // above only runs its `leadershipLost` short-circuit while `tenure === null` (its
+            // normal signal for "haven't claimed yet this tick"). Leaving `tenure` at its old,
+            // now-stale value would make that condition false for every later task, skipping
+            // the short-circuit entirely and letting them call handler.check() despite
+            // `leadershipLost` — exactly the redundant network work that flag exists to prevent.
             leadershipLost = true
-            fence = undefined
+            tenure = null
             this.setLeaderStatus(false)
             continue
           }
-          fence = reconfirmedOnError
+          tenure = reconfirmedOnError
           this.setLeaderStatus(true)
 
           let intercepted: boolean | void
@@ -875,6 +873,7 @@ export class PendingTaskPoller<TType extends string = string> {
           }
           continue
         } finally {
+          unlinkTenure?.()
           if (this.inFlightAbortController === abortController) this.inFlightAbortController = undefined
         }
 
@@ -883,17 +882,17 @@ export class PendingTaskPoller<TType extends string = string> {
         // progress with older numbers (e.g. a percent-complete counter visibly ticking
         // backward), and a late terminal response could finalize a task a new leader has
         // already moved past.
-        const reconfirmedOnSuccess = await this.reconfirmLeadership(task, expired, fence)
+        const reconfirmedOnSuccess = await this.reconfirmLeadership(task, expired, tenure)
         if (reconfirmedOnSuccess === false) {
-          // See the matching comment in the catch branch above: `fence` must go back to
-          // `undefined` too, or the pre-check block's `leadershipLost` short-circuit never runs
+          // See the matching comment in the catch branch above: `tenure` must go back to
+          // `null` too, or the pre-check block's `leadershipLost` short-circuit never runs
           // for any later task this tick.
           leadershipLost = true
-          fence = undefined
+          tenure = null
           this.setLeaderStatus(false)
           continue
         }
-        fence = reconfirmedOnSuccess
+        tenure = reconfirmedOnSuccess
         this.setLeaderStatus(true)
 
         if (result.status === "pending") {

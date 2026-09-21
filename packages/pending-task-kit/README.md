@@ -139,9 +139,11 @@ Mount `<PendingTaskNotifier />` once near your app root.
 `stop()` aborts the `AbortSignal` passed to whichever `handler.check()` call is currently in
 flight, if any — wire it into your own request (`fetch(url, { signal })`) if you want a
 stopped poller to actually cancel outstanding network work instead of only discarding the
-response once it arrives. Losing leadership to another tab is only ever discovered _after_
-`check()` has already settled, so that's the only thing that ever aborts it; handlers that
-ignore `signal` keep working exactly as before.
+response once it arrives. The same signal also aborts when `crossTabPollLeaderElection` is on
+and leadership is stolen by another tab mid-request — detected the moment the thief's claim
+lands (a `storage` event), not just after the fact on the next reconfirm — so a handler that
+wires `signal` in gets real cancellation there too, not only on `stop()`. Handlers that ignore
+`signal` keep working exactly as before either way.
 
 A `check()` that keeps throwing retries on the same fixed `pollIntervalMs`/
 `defaultPollIntervalMs` cadence as everything else by default — set a handler's
@@ -265,7 +267,14 @@ const notified = createTtlDedupeCache("my-app-pending-task-notified", 24 * 60 * 
 
 const poller = new PendingTaskPoller({
   // ...
-  claimResultOnce: (task) => withTabLock(`pending-task:${task.id}`, () => notified.claim(`${task.id}:${task.startedAt}`)),
+  claimResultOnce: (task) =>
+    withTabLock(`pending-task:${task.id}`, () => notified.claim(`${task.id}:${task.startedAt}`), {
+      // Required: how long to wait for the lock before giving up on this claim, rather than
+      // queuing behind a wedged holder forever. Pick something in line with how stale a claim
+      // decision is still useful for — your own session/refresh timeout is a reasonable anchor.
+      // Pass `Infinity` for the old unbounded-wait behavior.
+      waitTimeoutMs: 5_000,
+    }),
 })
 ```
 

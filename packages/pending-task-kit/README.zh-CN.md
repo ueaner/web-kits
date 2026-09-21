@@ -133,9 +133,11 @@ function PendingTaskNotifier() {
 
 `stop()` 会中止当前正在飞行中的那次 `handler.check()` 调用所拿到的 `AbortSignal`(如果
 有的话)——接进你自己的请求里(`fetch(url, { signal })`),就能让一个已停止的 poller
-真正取消掉还在进行的网络请求,而不是等响应回来后才丢弃它。leadership 被另一个标签页
-抢走这件事,永远只能在 `check()` 已经 settle 之后才被发现,所以这是唯一会触发中止的
-时机;不理会 `signal` 的 handler 行为不受任何影响。
+真正取消掉还在进行的网络请求,而不是等响应回来后才丢弃它。开着 `crossTabPollLeaderElection`
+时,leadership 在请求飞行途中被另一个标签页夺走同样会触发这个信号——在对方的 claim
+落盘的那一刻(一次 `storage` 事件)就能感知到,不用等到下一次 reconfirm 才事后发现,所以
+接了 `signal` 的 handler 在这种情况下也能拿到真正的取消,不只是 `stop()` 才有;不理会
+`signal` 的 handler 两种情况下行为都不受影响。
 
 `check()` 持续失败时,默认按和其它情况一样固定的 `pollIntervalMs`/
 `defaultPollIntervalMs` 节奏重试——给 handler 设置 `retryBackoffMs(failureCount)`,可以
@@ -252,7 +254,12 @@ const notified = createTtlDedupeCache("my-app-pending-task-notified", 24 * 60 * 
 
 const poller = new PendingTaskPoller({
   // ...
-  claimResultOnce: (task) => withTabLock(`pending-task:${task.id}`, () => notified.claim(`${task.id}:${task.startedAt}`)),
+  claimResultOnce: (task) =>
+    withTabLock(`pending-task:${task.id}`, () => notified.claim(`${task.id}:${task.startedAt}`), {
+      // 必填:等锁的上限,而不是无限期排在一个卡死的持有者后面。可以参考自己业务里
+      // 会话/刷新超时的量级来取值;传 `Infinity` 等价于旧版本的无界等待。
+      waitTimeoutMs: 5_000,
+    }),
 })
 ```
 

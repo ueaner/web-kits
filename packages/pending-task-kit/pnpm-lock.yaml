@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       cross-tab-kit:
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: 0.4.0
+        version: 0.4.0
     devDependencies:
       '@changesets/cli':
         specifier: ^3.0.3
@@ -1104,8 +1104,8 @@ packages:
   color-name@1.1.4:
     resolution: {integrity: sha512-dOy+3AuW3a2wNbZHIuMZpTcgjGuLU/uBL/ubcZF9OXbDo8ff4O8yVp5Bf0efS8uEoYo5q4Fx7dY9OgQGXgAsQA==}
 
-  cross-tab-kit@0.1.0:
-    resolution: {integrity: sha512-aaPRzO22eqn2RJLygLEAqRweyw1N76JCJTewnkgdM6dKdD117Npl0+ftfez3pL2EbbsW1ZdIh2S/ln2plGix+A==}
+  cross-tab-kit@0.4.0:
+    resolution: {integrity: sha512-6G/D3D5GfAxOPKxGRhNmPaMMHW2hHsceLtmXmwzZirt+wmB1ck1VM7LM01XadnvPjondzU6xsYmB6aPjs0vSug==}
 
   css-tree@3.2.1:
     resolution: {integrity: sha512-X7sjQzceUhu1u7Y/ylrRZFU2FS6LRiFVp6rKLPg23y3x3c3DOKAwuXGDp+PAGjh6CSnCjYeAul8pcT8bAl+lSA==}
@@ -2433,7 +2433,7 @@ snapshots:
 
   color-name@1.1.4: {}
 
-  cross-tab-kit@0.1.0: {}
+  cross-tab-kit@0.4.0: {}
 
   css-tree@3.2.1:
     dependencies:

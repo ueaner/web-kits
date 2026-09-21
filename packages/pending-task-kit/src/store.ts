@@ -1,4 +1,4 @@
-import { safeGetItem } from "cross-tab-kit"
+import { safeGetItem } from "cross-tab-kit/advanced"
 import { create, type StoreApi, type UseBoundStore } from "zustand"
 import { createJSONStorage, persist } from "zustand/middleware"
 import type { PendingTask, PendingTaskLogger } from "./types"
