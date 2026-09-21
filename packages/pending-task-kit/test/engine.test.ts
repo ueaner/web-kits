@@ -1551,6 +1551,60 @@ describe("PendingTaskPoller", () => {
     expect(store.getState().tasks).toHaveLength(1)
     pollerA.stop()
   })
+
+  it("aborts an in-flight handler.check() when leadership is stolen via a real storage event", async () => {
+    // Unlike the "discards a stale response" tests above (which write the rival lease directly
+    // via localStorage.setItem — a same-tab write the browser never echoes back as a "storage"
+    // event to its own writer), this dispatches the real event another tab's successful claim
+    // would cause, exercising cross-tab-kit's `Tenure.signal`/`linkAbortSignal` wiring: losing
+    // leadership becomes actual cancellation of the in-flight check, not just a discarded
+    // response once it eventually resolves.
+    const storageKey = "engine-abort-on-theft"
+    const store = createPendingTaskStore({ storageKey })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() })
+
+    let capturedSignal: AbortSignal | undefined
+    let resolveCheck!: (value: { status: "pending" }) => void
+    const check = vi.fn((_task: unknown, signal: AbortSignal) => {
+      capturedSignal = signal
+      return new Promise<{ status: "pending" }>((resolve) => {
+        resolveCheck = resolve
+      })
+    })
+    const registry: PendingTaskRegistry = { demo: { check } }
+    const pollLeaseKey = `${storageKey}-poll-leader`
+    const poller = new PendingTaskPoller({ store, registry, pollLeaseKey })
+
+    poller.forceCheckAll()
+    await flush()
+    expect(check).toHaveBeenCalledTimes(1)
+    expect(capturedSignal?.aborted).toBe(false)
+
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: pollLeaseKey,
+        newValue: JSON.stringify({ ownerId: "other-tab", fence: 2, expiresAt: Date.now() + 10_000 }),
+      }),
+    )
+
+    // AbortController.abort() fires its listeners synchronously — no flush() needed between the
+    // dispatch above and this assertion.
+    expect(capturedSignal?.aborted).toBe(true)
+
+    resolveCheck({ status: "pending" })
+    await flush()
+    poller.stop()
+  })
+
+  it("throws RangeError at construction on an invalid pollLeaseTtlMs when crossTabPollLeaderElection is on", () => {
+    const store = createPendingTaskStore({ storageKey: "engine-bad-ttl" })
+    expect(() => new PendingTaskPoller({ store, registry: {}, pollLeaseTtlMs: 0 })).toThrow(RangeError)
+  })
+
+  it("does not construct a lease/gate at all — so an invalid pollLeaseTtlMs cannot throw — when crossTabPollLeaderElection is off", () => {
+    const store = createPendingTaskStore({ storageKey: "engine-bad-ttl-election-off" })
+    expect(() => new PendingTaskPoller({ store, registry: {}, pollLeaseTtlMs: 0, crossTabPollLeaderElection: false })).not.toThrow()
+  })
 })
 
 async function flush() {
