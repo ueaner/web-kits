@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import * as advanced from "../src/advanced"
 import * as index from "../src/index"
 import type { Logger, PollLeaseClaimer, PollLeaseClaimerOptions, PollLeaseClaimResult } from "../src/advanced"
+import { SHORT_TTL_WARN_MS, SLOW_WAIT_WARN_MS } from "../src/index"
 import type { LeadershipContext, TabLockOptions, TabLockResult, Tenure, TryTabLockOptions } from "../src/index"
 
 // The export discipline is part of the API contract (§3, §8 of the greenfield doc): the
@@ -22,7 +23,16 @@ const advancedLogger: Logger = { warn: () => undefined }
 describe("export surface", () => {
   it("main entry exports exactly the scenario-level API", () => {
     expect(Object.keys(index).sort()).toEqual(
-      ["createLeadershipGate", "createLeadershipLoop", "createTtlDedupeCache", "tryWithTabLock", "withTabLock"].sort(),
+      [
+        "createLeadershipGate",
+        "createLeadershipLoop",
+        "createTtlDedupeCache",
+        "linkAbortSignal",
+        "SHORT_TTL_WARN_MS",
+        "SLOW_WAIT_WARN_MS",
+        "tryWithTabLock",
+        "withTabLock",
+      ].sort(),
     )
   })
 
@@ -51,5 +61,12 @@ describe("export surface", () => {
     expect(tryOptions.signal).toBeUndefined()
     expect(typeof describeCtx).toBe("function")
     expect(typeof describeTenure).toBe("function")
+  })
+
+  it("the warning-threshold constants are public and stable — a silent change here would break", () => {
+    // any downstream logic keyed off these (e.g. deliberately choosing a ttlMs/waitTimeoutMs
+    // on one side of a threshold in a test, without hardcoding the boundary itself).
+    expect(SHORT_TTL_WARN_MS).toBe(1_000)
+    expect(SLOW_WAIT_WARN_MS).toBe(5_000)
   })
 })
