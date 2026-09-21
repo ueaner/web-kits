@@ -70,9 +70,7 @@ if (options.signal) {
 新版:
 
 ```ts
-const unlinkUserSignal = options.signal
-  ? linkAbortSignal(options.signal, waitController)
-  : undefined
+const unlinkUserSignal = options.signal ? linkAbortSignal(options.signal, waitController) : undefined
 ```
 
 等价性论证:
@@ -113,12 +111,12 @@ export { linkAbortSignal } from "./kernel/abort"
 
 ### T-1(信息):`test/abort.test.ts` 覆盖了 4 个核心分支
 
-| 用例 | 覆盖路径 |
-|------|----------|
-| "aborts the target when the source aborts, propagating the reason" | 未 aborted 主路径 + reason 透传 |
-| "aborts the target immediately when the source is already aborted" | 已 aborted 同步分支 |
-| "does not abort the target once unlinked" | unlink 后 source 再 abort 不应传递 |
-| "unlinking after an already-aborted source is a no-op, not a throw" | no-op unlink 不抛错 |
+| 用例                                                                | 覆盖路径                           |
+| ------------------------------------------------------------------- | ---------------------------------- |
+| "aborts the target when the source aborts, propagating the reason"  | 未 aborted 主路径 + reason 透传    |
+| "aborts the target immediately when the source is already aborted"  | 已 aborted 同步分支                |
+| "does not abort the target once unlinked"                           | unlink 后 source 再 abort 不应传递 |
+| "unlinking after an already-aborted source is a no-op, not a throw" | no-op unlink 不抛错                |
 
 粒度合适。`source.reason` 是否为 `undefined`(默认值)未被显式覆盖,但用户自
 己构造 `new AbortController()` 不传 reason 就是 `undefined`,已被隐式验证。
