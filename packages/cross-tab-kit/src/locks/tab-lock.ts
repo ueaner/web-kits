@@ -1,3 +1,4 @@
+import { linkAbortSignal } from "../kernel/abort"
 import { assertPositiveFiniteMs } from "../kernel/logger"
 
 export interface TabLockContext {
@@ -160,15 +161,11 @@ export function withTabLock<T>(name: string, operation: (ctx: TabLockContext) =>
           waitTimedOut = true
           waitController.abort()
         }, options.waitTimeoutMs)
-  const onUserAbort = () => waitController.abort(options.signal?.reason)
-  if (options.signal) {
-    options.signal.addEventListener("abort", onUserAbort, { once: true })
-    if (options.signal.aborted) waitController.abort(options.signal.reason)
-  }
+  const unlinkUserSignal = options.signal ? linkAbortSignal(options.signal, waitController) : undefined
 
   const clearWait = () => {
     cancelWaitTimer?.()
-    options.signal?.removeEventListener("abort", onUserAbort)
+    unlinkUserSignal?.()
   }
 
   const runLocked = (): Promise<T> => {

@@ -12,7 +12,13 @@ function isArbitrationWaitTimeout(error: unknown): boolean {
  *  behind a wedged holder. Deliberately low even against a very long (or `Infinity`)
  *  `waitTimeoutMs`: half of "wait however long it takes" is still "however long it takes",
  *  and a stuck-holder symptom worth surfacing looks the same regardless of the eventual bound. */
-const SLOW_WAIT_WARN_MS = 5_000
+export const SLOW_WAIT_WARN_MS = 5_000
+
+/** Below this `ttlMs`, `createLeadershipGate` warns once at construction: every claim and
+ *  renewal is a storage write, and every write fires a `storage` event in every other open
+ *  tab — the cost scales with tab count, not with work done, so a sub-second TTL is worth
+ *  flagging even though it isn't a misconfiguration. */
+export const SHORT_TTL_WARN_MS = 1_000
 
 /**
  * One tenure of leadership handed out by `LeadershipGate.acquire`. Capture `fence` with the
@@ -93,7 +99,7 @@ export function createLeadershipGate(storageKey: string, ttlMs: number, options?
   // Invalid ttlMs throws here, via the claimer — a misconfiguration, surfaced at construction.
   const claimer = createPollLeaseClaimer(storageKey, ttlMs)
   const logger = resolveLogger(options?.logger)
-  if (ttlMs < 1_000 && logger) {
+  if (ttlMs < SHORT_TTL_WARN_MS && logger) {
     // Not an error, but worth one warning: a sub-second TTL means every acquire/re-check is a
     // storage write, and every write fires a storage event in every other open tab — the cost
     // scales with tab count, not with work done.
