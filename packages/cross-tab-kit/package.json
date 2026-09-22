@@ -10,15 +10,16 @@
     "mutex",
     "web-locks"
   ],
-  "homepage": "https://github.com/ueaner/cross-tab-kit#readme",
+  "homepage": "https://github.com/ueaner/web-kits/tree/main/packages/cross-tab-kit#readme",
   "bugs": {
-    "url": "https://github.com/ueaner/cross-tab-kit/issues"
+    "url": "https://github.com/ueaner/web-kits/issues"
   },
   "license": "MIT",
   "author": "ueaner",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ueaner/cross-tab-kit.git"
+    "url": "git+https://github.com/ueaner/web-kits.git",
+    "directory": "packages/cross-tab-kit"
   },
   "files": [
     "dist"
@@ -55,13 +56,8 @@
     "prepublishOnly": "npm run typecheck && npm run lint && npm run format:check && npm run test && npm run build && npm run pub:check"
   },
   "devDependencies": {
-    "@changesets/cli": "^3.0.3",
     "jsdom": "^30.1.0",
-    "oxfmt": "^0.68.0",
-    "oxlint": "^1.83.0",
-    "publint": "^0.3.24",
     "tsdown": "^0.23.0",
-    "typescript": "^7.0.2",
     "vitest": "^5.0.1"
   },
   "packageManager": "pnpm@11.5.2"

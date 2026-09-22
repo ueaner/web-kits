@@ -10,21 +10,25 @@
     "sqlite-wasm",
     "tauri"
   ],
-  "homepage": "https://github.com/ueaner/cross-sqlite-client#readme",
+  "homepage": "https://github.com/ueaner/web-kits/tree/main/packages/cross-sqlite-client#readme",
   "bugs": {
-    "url": "https://github.com/ueaner/cross-sqlite-client/issues"
+    "url": "https://github.com/ueaner/web-kits/issues"
   },
   "license": "MIT",
   "author": "ueaner",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ueaner/cross-sqlite-client.git"
+    "url": "git+https://github.com/ueaner/web-kits.git",
+    "directory": "packages/cross-sqlite-client"
   },
   "files": [
     "dist"
   ],
   "type": "module",
   "sideEffects": false,
+  "main": "./dist/core/index.js",
+  "module": "./dist/core/index.js",
+  "types": "./dist/core/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/core/index.d.ts",
@@ -48,6 +52,9 @@
     },
     "./package.json": "./package.json"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsdown",
     "dev": "tsdown --watch",
@@ -61,18 +68,13 @@
     "prepublishOnly": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm build && pnpm pub:check"
   },
   "devDependencies": {
-    "@changesets/cli": "^3.0.3",
     "@testing-library/react": "^16.3.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.3.0",
     "jsdom": "^30.1.0",
-    "oxfmt": "^0.68.0",
-    "oxlint": "^1.83.0",
-    "publint": "^0.3.24",
     "react": "^19.2.8",
     "react-dom": "^19.3.0",
     "tsdown": "^0.23.0",
-    "typescript": "^7.0.2",
     "vitest": "^5.0.1"
   },
   "peerDependencies": {
