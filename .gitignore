@@ -8,3 +8,5 @@ blob-report
 .last-run.json
 # tsdown 在 src/ 下生成的中间 .d.ts 产物（monorepo 多包 build 时尤其需要）
 packages/*/src/**/*.d.ts
+# pnpm pack / pub:check 产物
+*.tgz

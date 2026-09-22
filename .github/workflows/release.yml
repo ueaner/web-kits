@@ -1,0 +1,108 @@
+name: Release
+
+# per-package tag 触发：<pkg>@<version>（如 cross-tab-kit@0.5.0）。
+# 为什么不沿用单 `vX.Y.Z`：合仓后一个 tag 无法唯一确定要发布哪个包。
+# 仍然保留"tag 触发 + 干净 checkout + 重新验证 + --provenance"这套可追溯性：
+# 发布出去的东西永远能追溯到一个打过 tag、经过审查的提交。
+on:
+  push:
+    tags:
+      - "*@*"
+
+# 发布不应被取消：tag 推送触发的发布是终态动作，要么跑完要么报错。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # --provenance 需要 OIDC
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Resolve package and version from the tag
+        id: tag
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          PKG="${TAG%@*}"
+          VER="${TAG##*@}"
+          DIR="packages/$PKG"
+          if [ ! -d "$DIR" ]; then
+            echo "Tag names package '"'"'$PKG'"'"' but $DIR does not exist" >&2; exit 1
+          fi
+          if [ ! -f "$DIR/package.json" ]; then
+            echo "$DIR/package.json not found" >&2; exit 1
+          fi
+          echo "pkg=$PKG"   >> "$GITHUB_OUTPUT"
+          echo "ver=$VER"   >> "$GITHUB_OUTPUT"
+          echo "dir=$DIR"   >> "$GITHUB_OUTPUT"
+
+      - name: Verify the tag version matches that package'"'"'s package.json
+        env:
+          DIR: ${{ steps.tag.outputs.dir }}
+          VER: ${{ steps.tag.outputs.ver }}
+        run: |
+          pkg_version="$(node -p "require('"'"'./'"'"'$DIR/package.json'"'"').version")"
+          if [ "$pkg_version" != "$VER" ]; then
+            echo "Tag version $VER != $DIR/package.json version $pkg_version" >&2
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile
+
+      # build 必须在 pub:check 与 typecheck 之前：publint 检查 dist/，
+      # 而 pending-task-kit 的 test-e2e 直接 import ../dist/index.js（构建产物冒烟测试）。
+      - run: pnpm --filter "${{ steps.tag.outputs.pkg }}" run build
+      - run: pnpm --filter "${{ steps.tag.outputs.pkg }}" run pub:check
+      - run: pnpm --filter "${{ steps.tag.outputs.pkg }}" run typecheck
+      - run: pnpm --filter "${{ steps.tag.outputs.pkg }}" run lint
+      - run: pnpm --filter "${{ steps.tag.outputs.pkg }}" run format:check
+      - run: pnpm --filter "${{ steps.tag.outputs.pkg }}" run test
+
+      # 若该包有浏览器 e2e，也必须在这里跑（tag 触发路径要复现 CI 的全部验证）
+      - name: Browser e2e (if present)
+        if: ${{ steps.tag.outputs.pkg == '"'"'pending-task-kit'"'"' }}
+        run: pnpm --filter "${{ steps.tag.outputs.pkg }}" run test:e2e
+
+      # 发布前确认所有内部 workspace 依赖的精确版本都已存在于 registry。
+      # 注意：源 package.json 里写的是 "workspace:*" —— pnpm pack 会把发布 tarball 里的
+      # package.json 副本改写为精确版本（如 "0.4.0"，§1.3 已实测）。所以从 tarball 副本读，
+      # 而不是从源 package.json 或 lockfile（lockfile 把 workspace dep 存为 link: 引用，
+      # 拿不到真实版本号）。
+      - name: Preflight — internal workspace deps are published
+        env:
+          DIR: ${{ steps.tag.outputs.dir }}
+        run: |
+          node -e '"'"'
+          const fs=require("fs"), {execSync}=require("child_process");
+          // pub:check 步骤刚跑过 pnpm pack，tarball 在 packages/<pkg>/ 目录下
+          const pkgDir=process.env.DIR;
+          const tgz=fs.readdirSync(pkgDir).find(f=>f.endsWith(".tgz"));
+          if(!tgz){console.error("✗ 未找到 tarball（pub:check 应已生成）");process.exit(1);}
+          const pkg=JSON.parse(execSync(`tar -xzOf ${pkgDir}/${tgz} package/package.json`,{encoding:"utf8"}));
+          for (const [name, range] of Object.entries(pkg.dependencies||{})) {
+            if(!/^\d+\.\d+\.\d+/.test(range)) continue;
+            try {
+              execSync(`npm view ${name}@${range} version --registry=https://registry.npmjs.org`,{stdio:"ignore",timeout:10000});
+            } catch {
+              console.error(`✗ ${name}@${range} 尚未发布——请先发布被依赖的包`);
+              process.exit(1);
+            }
+          }
+          console.log("✓ 所有内部依赖已就位");
+          '"'"''"'"'
+
+      # --no-git-checks：CI 的 detached-HEAD tag checkout 下，pnpm publish 自身的
+      # git 洁净/分支检查没有意义；上面那次干净 checkout 的 tag 才是真正的可追溯性保证。
+      - run: pnpm --filter "${{ steps.tag.outputs.pkg }}" publish --no-git-checks --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
