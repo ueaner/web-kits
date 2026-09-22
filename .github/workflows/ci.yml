@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 仓库级检查（只跑一次，不按包重复）
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # changeset status --since 需要能 diff 到 base 分支
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm format:check
+      # PR 改动了需要发布的代码就必须带 changeset；纯文档/杂务 PR 用
+      # `pnpm changeset --empty` 显式豁免。Dependabot 按设计不带 changeset，豁免掉。
+      # 注：fork PR 上 origin 指向 fork repo，base_ref 不一定在 origin 里。
+      # 先把 upstream 的 base SHA 显式 fetch 回来，再作为 --since 锚点。
+      - name: Fetch upstream base ref (fork-safe)
+        if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
+        run: git fetch origin ${{ github.event.pull_request.base.sha }} --depth=1
+      - name: Require a changeset for changes that should ship in a release
+        if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
+        run: pnpm exec changeset status --since=${{ github.event.pull_request.base.sha }}
+
+  # 三包同一套流水线，用 matrix 而不是复制三份 job
+  # build 在最前（PTK test-e2e fixture 与 publint 都依赖 dist/）
+  package:
+    needs: hygiene
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [cross-tab-kit, pending-task-kit, cross-sqlite-client]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "${{ matrix.package }}" run build
+      # publint 检查 dist/，所以必须在 build 之后
+      - run: pnpm --filter "${{ matrix.package }}" run pub:check
+      - run: pnpm --filter "${{ matrix.package }}" run typecheck
+      - run: pnpm --filter "${{ matrix.package }}" run lint
+      - run: pnpm --filter "${{ matrix.package }}" run format:check
+      - run: pnpm --filter "${{ matrix.package }}" run test
+
+  # 浏览器 e2e 单列：只有部分包有，且是最慢、最容易 flake 的一层，
+  # 让它独立成一个 job，避免拖住（或挡住）其它包的信号。
+  # 将来 CSC 的 web 适配器 e2e、CTK 的真双标签页 e2e 都加进这个 matrix。
+  browser-e2e:
+    needs: package
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [pending-task-kit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter "${{ matrix.package }}" run build
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          # 按 lockfile 而非 Playwright 版本号键控，这样某个 @playwright/test 版本
+          # 自带的浏览器修订一定会正确失效。
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - run: pnpm exec playwright install --with-deps chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+      - run: pnpm exec playwright install-deps chromium
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+      - run: pnpm --filter "${{ matrix.package }}" run test:e2e
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report-${{ matrix.package }}
+          path: packages/${{ matrix.package }}/playwright-report/
+          retention-days: 7
