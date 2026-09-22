@@ -1,0 +1,27 @@
+{
+  "name": "web-kits",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run build && pnpm -r run typecheck",
+    "test": "pnpm -r run test",
+    "lint": "oxlint .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "pub:check": "pnpm -r run pub:check",
+    "changeset": "changeset",
+    "version-packages": "changeset version"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^3.0.3",
+    "oxfmt": "^0.68.0",
+    "oxlint": "^1.83.0",
+    "publint": "^0.3.24",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@11.5.2"
+}

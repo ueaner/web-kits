@@ -1,4 +1,0 @@
-allowBuilds:
-  esbuild: true
-minimumReleaseAgeExclude:
-  - cross-tab-kit@0.4.0
