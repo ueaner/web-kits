@@ -1,0 +1,30 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:13"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    # Don't propose versions published in the last few days — a cheap
+    # supply-chain hedge against freshly compromised releases.
+    cooldown:
+      default-days: 3
+    groups:
+      # Dev tooling moves together and is gated by CI; batch minor/patch
+      # bumps into one PR to keep noise down. Majors get their own PRs.
+      dev-dependencies:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:13"
+      timezone: Asia/Shanghai
