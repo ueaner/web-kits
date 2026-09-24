@@ -74,7 +74,10 @@ jobs:
       - uses: actions/setup-node@v7
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter "${{ matrix.package }}" run build
+      # `...` 后缀把 workspace 依赖一起构建：e2e 的 webServer 用 Vite 伺服 dist/，
+      # dist 里的裸导入（cross-tab-kit/advanced）经 exports 映射解析到依赖包的
+      # dist/——只 build 本包的话依赖包没有 dist，解析直接失败（CI 上实际踩过）。
+      - run: pnpm --filter "${{ matrix.package }}..." run build
       - name: Cache Playwright browsers
         uses: actions/cache@v6
         id: playwright-cache

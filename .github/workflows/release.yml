@@ -64,7 +64,9 @@ jobs:
 
       # build 必须在 pub:check 与 typecheck 之前：publint 检查 dist/，
       # 而 pending-task-kit 的 test-e2e 直接 import ../dist/index.js（构建产物冒烟测试）。
-      - run: pnpm --filter "${{ steps.tag.outputs.pkg }}" run build
+      # `...` 后缀把 workspace 依赖一起构建：e2e 的 Vite webServer 要解析 dist 里的
+      # 裸导入（cross-tab-kit/advanced → 依赖包的 dist/），只 build 本包会解析失败。
+      - run: pnpm --filter "${{ steps.tag.outputs.pkg }}..." run build
       - run: pnpm --filter "${{ steps.tag.outputs.pkg }}" run pub:check
       - run: pnpm --filter "${{ steps.tag.outputs.pkg }}" run typecheck
       - run: pnpm --filter "${{ steps.tag.outputs.pkg }}" run lint
