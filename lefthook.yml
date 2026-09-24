@@ -1,0 +1,36 @@
+# Git hooks（pre-commit / pre-push）由 lefthook 驱动。
+# 已 hook 的命令在 CI 也会跑（ci.yml 同名 job），所以这里是"早一步"的拦截，
+# 不是替代 CI。
+#
+# 用法：
+#   pnpm install            # 触发 prepare → lefthook install
+#   pnpm exec lefthook run pre-commit
+#   pnpm exec lefthook run pre-push
+#
+# 跳过：
+#   git commit --no-verify   # / git push --no-verify（紧急情况）
+
+pre-commit:
+  parallel: true
+  commands:
+    format:
+      # 自动格式化暂存区里的文件；stage_fixed 把改后的内容加回暂存区。
+      glob: "*.{ts,tsx,js,jsx,mjs,cjs,json,md,yaml,yml}"
+      run: oxfmt {staged_files}
+      stage_fixed: true
+    lint:
+      glob: "*.{ts,tsx,js,jsx}"
+      # oxlint 对未暂存但工作区已有的同名文件也会扫；只传 staged_files 即可。
+      run: oxlint {staged_files}
+
+pre-push:
+  parallel: true
+  commands:
+    typecheck:
+      # 与根 typecheck 脚本相同：先 build 再 tsc。
+      # PTK 的 typecheck 含 -p test-e2e,需要 dist/——pre-push 自己先跑 build,
+      # 避免把"忘了 build"留到 CI 才暴露。
+      run: pnpm -r run build && pnpm -r run typecheck
+    test:
+      # 只跑 vitest 单测，e2e 留给 CI（playwright 太慢)。
+      run: pnpm -r run test

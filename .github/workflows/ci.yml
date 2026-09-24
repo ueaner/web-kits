@@ -14,13 +14,16 @@ jobs:
   hygiene:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
-          fetch-depth: 0   # changeset status --since 需要能 diff 到 base 分支
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+          fetch-depth: 0 # changeset status --since 需要能 diff 到 base 分支
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      # 根级 oxlint/oxfmt 的覆盖面比各包自己的 lint/format:check 更大
+      # （还包含 *.config.ts、test-e2e/、docs/），所以这里跑一次就够，
+      # packages matrix 里不再重复跑一遍 per-package 的 lint/format:check。
       - run: pnpm lint
       - run: pnpm format:check
       # PR 改动了需要发布的代码就必须带 changeset；纯文档/杂务 PR 用
@@ -44,17 +47,15 @@ jobs:
       matrix:
         package: [cross-tab-kit, pending-task-kit, cross-sqlite-client]
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter "${{ matrix.package }}" run build
       # publint 检查 dist/，所以必须在 build 之后
       - run: pnpm --filter "${{ matrix.package }}" run pub:check
       - run: pnpm --filter "${{ matrix.package }}" run typecheck
-      - run: pnpm --filter "${{ matrix.package }}" run lint
-      - run: pnpm --filter "${{ matrix.package }}" run format:check
       - run: pnpm --filter "${{ matrix.package }}" run test
 
   # 浏览器 e2e 单列：只有部分包有，且是最慢、最容易 flake 的一层，
@@ -68,27 +69,29 @@ jobs:
       matrix:
         package: [pending-task-kit]
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter "${{ matrix.package }}" run build
       - name: Cache Playwright browsers
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         id: playwright-cache
         with:
           path: ~/.cache/ms-playwright
           # 按 lockfile 而非 Playwright 版本号键控，这样某个 @playwright/test 版本
           # 自带的浏览器修订一定会正确失效。
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-      - run: pnpm exec playwright install --with-deps chromium
+      # playwright 是 packages/<pkg> 的 devDependency，根目录没有它：
+      # 必须用 --filter 进到包目录再 exec，否则根 node_modules/.bin 里找不到 playwright。
+      - run: pnpm --filter "${{ matrix.package }}" exec playwright install --with-deps chromium
         if: steps.playwright-cache.outputs.cache-hit != 'true'
-      - run: pnpm exec playwright install-deps chromium
+      - run: pnpm --filter "${{ matrix.package }}" exec playwright install-deps chromium
         if: steps.playwright-cache.outputs.cache-hit == 'true'
       - run: pnpm --filter "${{ matrix.package }}" run test:e2e
       - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report-${{ matrix.package }}

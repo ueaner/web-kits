@@ -1,22 +1,32 @@
 version: 2
 updates:
-  - package-ecosystem: "npm"
+  # pnpm workspace：Dependabot 只认仓库根目录 + 根 pnpm-lock.yaml，
+  # 因此这里只留一条 "/"，不要再为 packages/* 各列一条（那些目录没有自己的 lockfile）。
+  - package-ecosystem: npm
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: weekly
+      day: monday
+      time: "07:13"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    # 不提议最近几天内发布的版本——针对"刚被投毒的 release"的廉价供应链对冲。
+    cooldown:
+      default-days: 3
     groups:
-      dependencies:
-        patterns:
-          - "*"
-  - package-ecosystem: "npm"
-    directory: "/packages/cross-tab-kit"
+      # 开发依赖的 minor/patch 合成一个 PR 降噪；major 各自出 PR。
+      dev-dependencies:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+
+  # workflow 里用到的 action 版本也交给它维护：漏掉这一条，action 版本会静默落后
+  # （迁移时就发生过整批 action 被写回旧 major 的情况）。
+  - package-ecosystem: github-actions
+    directory: "/"
     schedule:
-      interval: "weekly"
-  - package-ecosystem: "npm"
-    directory: "/packages/pending-task-kit"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "npm"
-    directory: "/packages/cross-sqlite-client"
-    schedule:
-      interval: "weekly"
+      interval: weekly
+      day: monday
+      time: "07:13"
+      timezone: Asia/Shanghai

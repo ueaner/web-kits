@@ -242,7 +242,7 @@ const poller = new PendingTaskPoller({
 Web Locks API 的浏览器里,`withTabLock` 会退化为完全不加锁;租约写入偶尔静默失败(比如
 配额超限、Safari 隐私模式)时,也可能让两个标签页都以为自己是 leader。如果多个标签页
 可能同时处理同一个任务的完成事件(以上任意一种竞态,或者强制重新登录导致的竞态),可以
-通过 `claimResultOnce` 组合 [`cross-tab-kit`](https://github.com/ueaner/cross-tab-kit)(这个包
+通过 `claimResultOnce` 组合 [`cross-tab-kit`](https://github.com/ueaner/web-kits/tree/main/packages/cross-tab-kit#readme)(这个包
 内部依赖它,但不重新导出,需要自己单独安装:`pnpm add cross-tab-kit`)提供的原语——它也
 会覆盖到其它标签页收到广播后的那次派发(见上文),所以即使开着选主,也能拿到真正的全局
 保证:
@@ -310,6 +310,12 @@ clearResultRelay(resultRelayKey) // 用你传入的那个 key,没传的话就是
 
 下面这些行为都是刻意的取舍,不是 bug——集中写在这里,而不是只散落在源码注释里:
 
+- **发布产物以 ES2022 为目标**。三个包统一用 `target: ES2022` 构建,在这个目标下
+  TS/oxc 会直接输出**原生 class field**(`dist` 里能看到的字段声明),因此本包的
+  最低 JS 引擎要求是 ES2022(原生 class fields ≈ Chrome 74+ / Safari 14.1+ /
+  Firefox 69+)。这是 0.6.0 起的变化:此前是 ES2020 目标,产物会把 class field 降级掉。
+  如果你的目标浏览器低于这个基线且构建流程不会降级 `node_modules` 里的依赖,请在打包
+  阶段自行处理。
 - **全链路依赖墙钟(`Date.now()`)**。时钟往回走只会让轮询/续约/去重变慢一点,无害。
   时钟往前跳可能让一批任务同时静默过期,也可能让 lease/去重记录提前过期——fencing
   (见"跨标签页轮询选主"一节)仍然保证 leadership 判断是*正确*的,只是那一刻可用性会

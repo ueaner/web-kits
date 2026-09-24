@@ -3,6 +3,9 @@
   "include": ["src", "test"],
   "compilerOptions": {
     "jsx": "react-jsx",
+    // 让 typecheck 直接看 cross-tab-kit 的源码，这样单独跑 `tsc --noEmit` 不需要先构建
+    // 依赖包。vitest.config.ts 里有一份等价的 alias（vitest/vite 不读 tsconfig paths），
+    // 两者的条目必须一起维护：cross-tab-kit 新增子路径导出时，这里是第一处会漏的地方。
     "paths": {
       "cross-tab-kit": ["../cross-tab-kit/src/index.ts"],
       "cross-tab-kit/advanced": ["../cross-tab-kit/src/advanced.ts"]

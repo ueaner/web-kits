@@ -19,16 +19,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write   # --provenance 需要 OIDC
+      id-token: write # --provenance 需要 OIDC
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
+      # 下面的 shell 片段里不要在双引号内嵌 `'"'"'` 这类单引号转义惯用法：
+      # 该惯用法只在单引号上下文里成立，混进双引号会打乱引号配对、让整个 run 脚本
+      # 以 "syntax error near unexpected token" 失败（曾经踩过）。
       - name: Resolve package and version from the tag
         id: tag
         run: |
@@ -36,22 +39,22 @@ jobs:
           PKG="${TAG%@*}"
           VER="${TAG##*@}"
           DIR="packages/$PKG"
-          if [ ! -d "$DIR" ]; then
-            echo "Tag names package '"'"'$PKG'"'"' but $DIR does not exist" >&2; exit 1
-          fi
           if [ ! -f "$DIR/package.json" ]; then
-            echo "$DIR/package.json not found" >&2; exit 1
+            echo "Tag names package '$PKG' but $DIR/package.json does not exist" >&2
+            exit 1
           fi
-          echo "pkg=$PKG"   >> "$GITHUB_OUTPUT"
-          echo "ver=$VER"   >> "$GITHUB_OUTPUT"
-          echo "dir=$DIR"   >> "$GITHUB_OUTPUT"
+          {
+            echo "pkg=$PKG"
+            echo "ver=$VER"
+            echo "dir=$DIR"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Verify the tag version matches that package'"'"'s package.json
+      - name: Verify the tag version matches that package's package.json
         env:
           DIR: ${{ steps.tag.outputs.dir }}
           VER: ${{ steps.tag.outputs.ver }}
         run: |
-          pkg_version="$(node -p "require('"'"'./'"'"'$DIR/package.json'"'"').version")"
+          pkg_version="$(node -p "require('./$DIR/package.json').version")"
           if [ "$pkg_version" != "$VER" ]; then
             echo "Tag version $VER != $DIR/package.json version $pkg_version" >&2
             exit 1
@@ -70,39 +73,59 @@ jobs:
 
       # 若该包有浏览器 e2e，也必须在这里跑（tag 触发路径要复现 CI 的全部验证）
       - name: Browser e2e (if present)
-        if: ${{ steps.tag.outputs.pkg == '"'"'pending-task-kit'"'"' }}
-        run: pnpm --filter "${{ steps.tag.outputs.pkg }}" run test:e2e
+        if: ${{ steps.tag.outputs.pkg == 'pending-task-kit' }}
+        run: |
+          # pnpm 默认不跑依赖的 install 脚本，浏览器不会自动下载；
+          # 与 ci.yml 一样显式安装（release 是一次性流程，不需要缓存）。
+          pnpm --filter "${{ steps.tag.outputs.pkg }}" exec playwright install --with-deps chromium
+          pnpm --filter "${{ steps.tag.outputs.pkg }}" run test:e2e
 
       # 发布前确认所有内部 workspace 依赖的精确版本都已存在于 registry。
-      # 注意：源 package.json 里写的是 "workspace:*" —— pnpm pack 会把发布 tarball 里的
-      # package.json 副本改写为精确版本（如 "0.4.0"，§1.3 已实测）。所以从 tarball 副本读，
-      # 而不是从源 package.json 或 lockfile（lockfile 把 workspace dep 存为 link: 引用，
-      # 拿不到真实版本号）。
+      #
+      # 这里**不能**从源 package.json 读版本（workspace 依赖写的是 "workspace:*"，会被
+      # 版本号正则直接跳过，变成一条永不报错的空检查），也**不能**指望 pub:check 留下
+      # tarball——publint 确实会 pack，但它 pack 到临时目录并在结束时清理，包目录下不会
+      # 留下 .tgz。正确做法：从兄弟包的 package.json 建"包名 → 版本"映射再核对 registry。
+      #
+      # 两种失败都 fail closed，但要给出不同的提示：真正的 E404 是"顺序搞错了"，
+      # 而查询本身失败（离线、代理、registry 抖动、缓存不可写）不该被误报成"尚未发布"。
       - name: Preflight — internal workspace deps are published
         env:
           DIR: ${{ steps.tag.outputs.dir }}
         run: |
-          node -e '"'"'
-          const fs=require("fs"), {execSync}=require("child_process");
-          // pub:check 步骤刚跑过 pnpm pack，tarball 在 packages/<pkg>/ 目录下
-          const pkgDir=process.env.DIR;
-          const tgz=fs.readdirSync(pkgDir).find(f=>f.endsWith(".tgz"));
-          if(!tgz){console.error("✗ 未找到 tarball（pub:check 应已生成）");process.exit(1);}
-          const pkg=JSON.parse(execSync(`tar -xzOf ${pkgDir}/${tgz} package/package.json`,{encoding:"utf8"}));
-          for (const [name, range] of Object.entries(pkg.dependencies||{})) {
-            if(!/^\d+\.\d+\.\d+/.test(range)) continue;
-            try {
-              execSync(`npm view ${name}@${range} version --registry=https://registry.npmjs.org`,{stdio:"ignore",timeout:10000});
-            } catch {
-              console.error(`✗ ${name}@${range} 尚未发布——请先发布被依赖的包`);
+          node -e '
+          const fs=require("fs"),{execSync}=require("child_process");
+          const map={};
+          for(const d of fs.readdirSync("packages")){
+            const p=`packages/${d}/package.json`;
+            if(fs.existsSync(p)){const j=JSON.parse(fs.readFileSync(p,"utf8"));map[j.name]=j.version;}
+          }
+          const pkg=JSON.parse(fs.readFileSync(process.env.DIR+"/package.json","utf8"));
+          for(const [name] of Object.entries(pkg.dependencies||{})){
+            const v=map[name];
+            if(!v) continue; // 不是 workspace 依赖，跳过
+            try{
+              execSync(`npm view ${name}@${v} version --registry=https://registry.npmjs.org`,{stdio:"pipe",encoding:"utf8",timeout:15000});
+            }catch(err){
+              const detail=String((err&&err.stderr)||(err&&err.message)||err);
+              if(/E404|No matching version|is not in this registry/i.test(detail)){
+                console.error(`✗ ${name}@${v} 在 registry 上不存在——请先推被依赖包的 tag，发布完成后再推这个`);
+              }else{
+                console.error(`✗ 无法确认 ${name}@${v} 是否已发布（registry 查询本身失败，原因见下）:`);
+                console.error(detail.trim().slice(0,800));
+              }
               process.exit(1);
             }
           }
           console.log("✓ 所有内部依赖已就位");
-          '"'"''"'"'
+          '
 
       # --no-git-checks：CI 的 detached-HEAD tag checkout 下，pnpm publish 自身的
       # git 洁净/分支检查没有意义；上面那次干净 checkout 的 tag 才是真正的可追溯性保证。
+      #
+      # 这一步会通过 packages/<pkg>/package.json 的 prepublishOnly 再跑一遍完整验证链，
+      # 与上面几行**有意重复**：上面保证 CI 里的 tag 路径可信，prepublishOnly 保证
+      # 本地手动 `pnpm --filter <pkg> publish` 同样安全。
       - run: pnpm --filter "${{ steps.tag.outputs.pkg }}" publish --no-git-checks --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

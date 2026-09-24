@@ -1,5 +1,8 @@
 {
   "compilerOptions": {
+    // 三个包统一 ES2022。注意这个 target 会**进入发布产物**：ES2022 下 TS/oxc 直接输出
+    // 原生 class field，而 ES2020 会降级掉它们——所以改这里等于改发布包的最低引擎要求。
+    // 详见 CHANGELOG / .changeset 里关于构建目标的记录。
     "target": "ES2022",
     "lib": ["ES2022", "DOM"],
     "module": "ESNext",
@@ -11,6 +14,9 @@
     "forceConsistentCasingInFileNames": true,
     "noUncheckedIndexedAccess": true,
     "isolatedModules": true,
-    "noEmit": true
+    "noEmit": true,
+    // 显式声明，不依赖 target 的隐式默认值：class field 的 define/assign 语义会随
+    // target（< ES2022 时为 false）静默改变输出，一旦将来有人下调 target，语义就变了。
+    "useDefineForClassFields": true
   }
 }

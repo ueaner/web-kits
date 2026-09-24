@@ -227,7 +227,7 @@ localStorage 的租约:`claim(ownerId)` 返回 `{ leader: true, fence }` 或
 
 ## 贡献
 
-Issue 和 PR 欢迎提到 <https://github.com/ueaner/cross-tab-kit>。
+Issue 和 PR 欢迎提到 <https://github.com/ueaner/web-kits/issues>。
 
 ```bash
 pnpm install

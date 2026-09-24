@@ -255,7 +255,7 @@ before it resolves, which then independently completes the same task and calls i
 Web Locks API; and a lease write that silently fails (quota exceeded, private-mode Safari) can,
 rarely, let two tabs both believe they're leader. If several tabs can end up processing the same
 completion (any of those, or a forced re-login race), compose primitives from
-[`cross-tab-kit`](https://github.com/ueaner/cross-tab-kit) (a separate package this one depends
+[`cross-tab-kit`](https://github.com/ueaner/web-kits/tree/main/packages/cross-tab-kit#readme) (a separate package this one depends
 on internally, but doesn't re-export — install it yourself: `pnpm add cross-tab-kit`) via
 `claimResultOnce` — this also gates the _relayed_ dispatch on every other tab (see above), so it
 gives you a true system-wide guarantee even with leader election on:
@@ -330,6 +330,12 @@ clearResultRelay(resultRelayKey) // same key you passed, or `${storageKey}-resul
 A grab-bag of behaviors that are intentional trade-offs rather than bugs, collected here so
 they're documented somewhere instead of only in source comments:
 
+- **The published build targets ES2022.** All three packages build with `target: ES2022`, and at
+  that target TS/oxc emit **native class fields** directly (the field declarations visible in
+  `dist`), so this package's minimum JS engine is ES2022 (native class fields ≈ Chrome 74+ /
+  Safari 14.1+ / Firefox 69+). That changed in 0.6.0: the previous ES2020 target downlevelled
+  them. If your browser baseline is older and your build doesn't downlevel dependencies from
+  `node_modules`, handle it in your bundling step.
 - **Wall-clock dependent** (`Date.now()` throughout). A clock stepping _backward_ just delays
   polling/lease-renewal/dedupe harmlessly. A clock jumping _forward_ can make a batch of tasks
   expire silently all at once and make leases/dedupe records expire early — fencing (see

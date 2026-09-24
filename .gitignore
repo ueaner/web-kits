@@ -10,3 +10,9 @@ blob-report
 packages/*/src/**/*.d.ts
 # pnpm pack / pub:check 产物
 *.tgz
+# packages/<pkg>/docs/ 是过程性 working artifacts(架构草稿、code review、
+# implementation review 等),不是面向用户的文档。保留在本地供查阅,不进版本控制。
+# READMEs 不引用它们(已确认),不产生死链。
+packages/*/docs/
+# 迁移方案与评审(过程产物,迁移完成后无长期价值)。留在本地供查阅。
+docs/

@@ -249,7 +249,7 @@ disabled).
 
 ## Contributing
 
-Issues and PRs welcome at <https://github.com/ueaner/cross-tab-kit>.
+Issues and PRs welcome at <https://github.com/ueaner/web-kits/issues>.
 
 ```bash
 pnpm install
