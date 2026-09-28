@@ -1,5 +1,6 @@
 packages:
   - "packages/*"
+  - "packages/*/examples"
 
 # pnpm 默认禁止依赖的 install 脚本（防供应链投毒）。
 # 这里只放真正需要执行构建脚本的依赖。注意：v11 起这是唯一入口，

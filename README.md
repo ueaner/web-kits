@@ -43,6 +43,21 @@ Notes on resolution, which is deliberately split:
 Run a per-package script directly with `pnpm --filter <pkg> run <script>`; the repo-wide entries
 above are the supported path for "check everything".
 
+### Examples
+
+Each package has a runnable browser demo app (Vite + React) under its `examples/` directory —
+see each app's own README for what it exercises:
+
+- `pnpm example:ctk` — cross-tab coordination demos (mutex, leader election, TTL dedupe), port 5174
+- `pnpm example:ptk` — pending-task polling against a fake backend, port 5175
+- `pnpm example:csc` — a notes CRUD app on SQLite with OPFS persistence, port 5176
+
+The examples are workspace members, so the repo-wide `pnpm typecheck` and `pnpm -r run build`
+cover them too. An example's own `build` / `typecheck` scripts read the library's `dist/` and do
+not rebuild it (a nested rebuild would race with sibling examples under `pnpm -r`), so to run one
+standalone, include its dependencies: `pnpm --filter @examples/cross-tab-kit... run build`.
+Only `dev` (the `example:*` scripts) builds the library first.
+
 ## Releases
 
 Releases are per-package tags: `<pkg>@<version>` (e.g. `cross-tab-kit@0.5.0`). `changeset version`

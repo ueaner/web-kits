@@ -363,6 +363,20 @@ clearResultRelay(resultRelayKey) // 用你传入的那个 key,没传的话就是
   绑定里的 `enabled`)是你用来控制"是否应该轮询"的开关;`onCheckError` 让你能够识别出一次
   认证失败并做出反应(比如调用 `stop()`),而引擎本身完全不需要知道"未授权"是什么意思。
 
+## 示例
+
+[`examples/`](./examples/) 目录下有一个可运行的浏览器演示应用(Vite + React)——详细说明见
+它自己的 README。它基于一个假后端演示任务轮询的完整流程:
+
+- `usePendingTaskPoller` React 绑定端到端驱动任务跟踪
+- `retryBackoffMs`——`check()` 持续失败后的指数退避
+- 跨标签页轮询选主与结果中继,用两个标签页观察
+- `claimResultOnce`——多标签页下的"恰好一次"通知
+- 任务完成、过期、登出时的清理
+
+在仓库根目录运行 `pnpm example:ptk`(或在 `examples/` 目录里 `pnpm dev`),然后用两个标签页
+打开 <http://localhost:5175>。
+
 ## 贡献指南
 
 开发环境需要 Node 24+(见 `package.json` 的 `engines`;库本身是浏览器运行时、不依赖

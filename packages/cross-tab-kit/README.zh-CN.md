@@ -225,6 +225,20 @@ localStorage 的租约:`claim(ownerId)` 返回 `{ leader: true, fence }` 或
   步。
 - Web Locks 的 `steal`、读写锁、锁检视——有真实需求时都是纯加法。
 
+## 示例
+
+[`examples/`](./examples/) 目录下有一个可运行的浏览器演示应用(Vite + React)——详细说明见
+它自己的 README。包含 5 个 demo:
+
+- `withTabLock` / `tryWithTabLock`——等待型和拿不到就跳过两种互斥锁,两个标签页互相竞争
+- `createLeadershipLoop`——定时器驱动的选主,关闭 Leader 标签页观察接管
+- `createLeadershipGate`——调用者驱动的选主:手动点"poll tick"按钮认领租约
+- `createTtlDedupeCache`——跨标签页"恰好一次"通知(与 `withTabLock` 组合使用)
+- `createPollLeaseClaimer`——`advanced` 子路径里最底层的 TTL 租约原语
+
+在仓库根目录运行 `pnpm example:ctk`(或在 `examples/` 目录里 `pnpm dev`),然后用两个标签页
+打开 <http://localhost:5174>。
+
 ## 贡献
 
 Issue 和 PR 欢迎提到 <https://github.com/ueaner/web-kits/issues>。

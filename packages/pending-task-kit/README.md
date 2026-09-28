@@ -389,6 +389,20 @@ they're documented somewhere instead of only in source comments:
   logged in; `onCheckError` lets you recognize an auth failure and react to it (e.g. call
   `stop()`) without the engine knowing what "unauthorized" means.
 
+## Examples
+
+A runnable browser demo app (Vite + React) lives in [`examples/`](./examples/) — see its README
+for details. It walks through the full polling flow against a fake backend:
+
+- The `usePendingTaskPoller` React binding driving task tracking end to end
+- `retryBackoffMs` — exponential backoff after a failing `check()`
+- Cross-tab poll-leader election and result relay, observed across two tabs
+- `claimResultOnce` — exactly-once notification even with several tabs open
+- Task cleanup on completion, expiry, and logout
+
+Start it from the repo root with `pnpm example:ptk` (or `pnpm dev` inside `examples/`), then open
+<http://localhost:5175> in two tabs.
+
 ## Contributing
 
 Development requires Node 24+ (see `engines` in `package.json`; the library itself is a

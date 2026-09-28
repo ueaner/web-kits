@@ -297,6 +297,17 @@ await runMigrations(client, APP_MIGRATIONS)
 
 本包处于 0.x 阶段：**minor 版本可能包含破坏性变更**（0.2.0 就给 `DbClient` 新增了必选方法 `executeBatch`，自定义 adapter/client 的实现会在编译期报错）。请锁定精确版本号，升级前阅读 [CHANGELOG](CHANGELOG.md)。
 
+## 示例
+
+[`examples/`](./examples/) 目录下有一个可运行的浏览器演示应用（Vite + React）——详细说明见它自己的 README。这是一个便签 CRUD 应用，演示了：
+
+- `DatabaseProvider` / `useDatabase`——loading / error / ready 三种状态
+- 启动时应用 v1 → v2 的版本化迁移
+- OPFS 持久化，以及缺少跨源隔离时静默降级到 `:memory:`
+- `singleTabLock`：再开一个标签页会触发 `DbTabLockError`，以及重试流程（传入一个新的 client promise）
+
+OPFS 持久化要求页面带 COOP/COEP 响应头（见 [OPFS 持久化需要 COOP/COEP](#opfs-持久化需要-coopcoep)）——演示应用的 Vite 配置已内置。在仓库根目录运行 `pnpm example:csc`（或在 `examples/` 目录里 `pnpm dev`），然后打开 <http://localhost:5176>。
+
 ## 贡献
 
 改动可发布代码的 PR 必须附带 changeset（`pnpm changeset`）——CI 会通过 `changeset status` 强制检查。纯文档或杂务类 PR 可以用 `pnpm changeset --empty` 豁免。

@@ -247,6 +247,20 @@ disabled).
 - `steal`, read-write locks, and `lock inspection` from the Web Locks API — pure additions
   if a real need shows up.
 
+## Examples
+
+A runnable browser demo app (Vite + React) lives in [`examples/`](./examples/) — see its README
+for details. It demos:
+
+- `withTabLock` / `tryWithTabLock` — the waiting and skip-if-busy mutex flavors, racing two tabs
+- `createLeadershipLoop` — timer-driven leader election, with takeover when the leader tab closes
+- `createLeadershipGate` — caller-driven election: a manual "poll tick" button claims the lease
+- `createTtlDedupeCache` — exactly-once notification across tabs (composed with `withTabLock`)
+- `createPollLeaseClaimer` — the raw TTL lease primitive from the `advanced` subpath
+
+Start it from the repo root with `pnpm example:ctk` (or `pnpm dev` inside `examples/`), then open
+<http://localhost:5174> in two tabs.
+
 ## Contributing
 
 Issues and PRs welcome at <https://github.com/ueaner/web-kits/issues>.

@@ -440,6 +440,22 @@ This package is pre-1.0: **minor releases may contain breaking changes**
 adapter/client implementations at compile time). Pin exact versions, and read
 the [CHANGELOG](CHANGELOG.md) when upgrading.
 
+## Examples
+
+A runnable browser demo app (Vite + React) lives in [`examples/`](./examples/) — see its README
+for details. It's a notes CRUD app that exercises:
+
+- `DatabaseProvider` / `useDatabase` — the loading / error / ready states
+- Versioned migrations (v1 → v2) applied at startup
+- OPFS persistence, with the silent `:memory:` fallback when cross-origin isolation is missing
+- `singleTabLock`: opening a second tab surfaces `DbTabLockError`, plus the retry flow
+  (passing a fresh client promise)
+
+OPFS persistence requires the page to be served with COOP/COEP headers (see
+[COOP/COEP required for OPFS persistence](#coopcoep-required-for-opfs-persistence)) — the demo's
+Vite config already sets them. Start it from the repo root with `pnpm example:csc` (or `pnpm dev`
+inside `examples/`), then open <http://localhost:5176>.
+
 ## Contributing
 
 PRs that change shippable code must include a changeset (`pnpm changeset`) —

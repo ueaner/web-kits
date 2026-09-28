@@ -13,6 +13,9 @@
     "pub:check": "pnpm -r run pub:check",
     "changeset": "changeset",
     "version-packages": "changeset version",
+    "example:ctk": "pnpm --filter @examples/cross-tab-kit dev",
+    "example:ptk": "pnpm --filter @examples/pending-task-kit dev",
+    "example:csc": "pnpm --filter @examples/cross-sqlite-client dev",
     "prepare": "lefthook install || true"
   },
   "devDependencies": {
