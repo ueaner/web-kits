@@ -6,4 +6,4 @@
 
 **Behavior change:** an `onResult` that ignores `detail.silent` and treats any non-`success` status as a failure will now also see `expired`; check `detail.status`/`detail.silent` if that's not wanted.
 
-With `crossTabPollLeaderElection` on, expiring a task now requires poll leadership (previously it was leaderless local bookkeeping), so only the leader tab expires it and the expiry is dispatched once and relayed, rather than once per open tab.
+With `crossTabPollLeaderElection` on, expiring a task now requires poll leadership (previously it was leaderless local bookkeeping), so only the leader tab expires it and relays the result, rather than every open tab dispatching it; as with `success`/`failure`, a strict once-only guarantee still needs `claimResultOnce`.

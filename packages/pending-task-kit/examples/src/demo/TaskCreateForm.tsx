@@ -37,7 +37,7 @@ export function TaskCreateForm() {
       </div>
       {selected && <p className="mt-2 text-sm text-slate-500">{selected.description}</p>}
       <p className="mt-2 text-xs text-slate-400">
-        刷新页面后，未完成的任务会从 localStorage 恢复并自动继续轮询（zustand persist 负责恢复，poller 直接接管，无需手动重注册）。
+        刷新页面后，未完成的任务会从 localStorage 恢复并自动继续轮询（store 创建时从 localStorage 读回，poller 直接接管，无需手动重注册）。
       </p>
     </div>
   )

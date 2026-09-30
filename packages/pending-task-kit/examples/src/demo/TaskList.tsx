@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { clearResultRelay, DEFAULT_STORAGE_KEY } from "pending-task-kit"
+import { usePendingTasks } from "pending-task-kit/react"
 import { clearBackendJobs, removeBackendJob } from "./fakeBackend"
 import { useFeedStore } from "./feed"
 import { clearNotifiedCache, TASK_TYPE_LABELS, taskStore, type DemoTaskType } from "./registry"
@@ -19,7 +20,7 @@ function percentOf(metadata: Record<string, unknown> | undefined): number | unde
 }
 
 export function TaskList() {
-  const tasks = taskStore((s) => s.tasks)
+  const tasks = usePendingTasks(taskStore)
   const now = useNow()
   const push = useFeedStore((s) => s.push)
 

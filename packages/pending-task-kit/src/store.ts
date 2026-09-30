@@ -1,12 +1,19 @@
-import { safeGetItem } from "cross-tab-kit/advanced"
-import { create, type StoreApi, type UseBoundStore } from "zustand"
-import { createJSONStorage, persist } from "zustand/middleware"
+import { safeGetItem, safeSetItem } from "cross-tab-kit/advanced"
+import { rethrowAsync } from "./rethrow"
 import type { PendingTask, PendingTaskLogger } from "./types"
 
 export const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000
 export const DEFAULT_STORAGE_KEY = "pending-tasks"
 /** Default for `CreatePendingTaskStoreOptions.taskListWarnThreshold` — see its doc comment. */
 export const DEFAULT_TASK_LIST_WARN_THRESHOLD = 200
+
+/** Version stamped on the persisted entry. The on-disk shape — `{ state: { tasks }, version }` —
+ *  is the one zustand's `persist` middleware wrote for 0.6.0 and earlier (this store was a
+ *  zustand store until 0.7.0), kept byte-compatible so upgrading never loses a user's tasks:
+ *  entries written by older versions (`version: 0` before 0.3.0, `version: 1` since, or no
+ *  `version` at all) all hydrate as-is. Bump this and add a real migration in
+ *  `parseTasksFromStorageValue` only when the shape itself actually changes. */
+const PERSIST_VERSION = 1
 
 export interface PendingTaskStoreState<TType extends string = string> {
   tasks: PendingTask<TType>[]
@@ -19,31 +26,62 @@ export interface PendingTaskStoreState<TType extends string = string> {
   clearAllTasks: () => void
 }
 
-export type PendingTaskStore<TType extends string = string> = UseBoundStore<StoreApi<PendingTaskStoreState<TType>>> & {
+export type PendingTaskStoreListener<TType extends string = string> = (
+  state: PendingTaskStoreState<TType>,
+  previousState: PendingTaskStoreState<TType>,
+) => void
+
+export interface PendingTaskStore<TType extends string = string> {
+  /** The current snapshot: `tasks` plus the mutators. A new object on every write (the
+   *  mutators themselves stay the same functions), so identity comparison detects a change. */
+  getState: () => PendingTaskStoreState<TType>
+  /**
+   * Calls `listener` after every change — a write in this tab, or another tab's write to the
+   * same `storageKey` — with the new snapshot and the one this listener last received (the
+   * snapshot current when it subscribed, for its first call). Returns an unsubscribe function;
+   * each `subscribe` call is its own subscription, even for the same function.
+   *
+   * - While the store has at least one subscriber it listens for other tabs' writes (the
+   *   browser's `storage` event) and adopts them — so a `usePendingTasks` component or a running
+   *   `PendingTaskPoller` keeps it in sync. With no subscribers, `getState().tasks` isn't kept
+   *   current (the mutators always re-read storage regardless); the first new subscriber
+   *   re-syncs it.
+   * - A listener that writes again from inside its callback: the newer snapshot is delivered to
+   *   everyone, and the older one to no one who hadn't received it yet — each listener's
+   *   `previousState` is still the last snapshot *it* saw, so diffing the pair never skips a
+   *   change.
+   * - A listener unsubscribed mid-notification (by itself or another) isn't called again.
+   * - A throwing listener is rethrown on a fresh microtask, without affecting the write or the
+   *   other listeners.
+   *
+   * Framework bindings build on this — see `usePendingTasks` in `pending-task-kit/react`.
+   */
+  subscribe: (listener: PendingTaskStoreListener<TType>) => () => void
   storageKey: string
   /**
    * True when the most recent write to this store's localStorage entry threw (quota exceeded,
    * Safari private browsing, storage disabled, ...) instead of landing — by whichever writer
    * made it: this store's own mutators, or an external batched write via `writeTasks` (e.g.
-   * `PendingTaskPoller`'s `flushBatch`/cross-tab `storage` sync). While true, persisted storage
+   * `PendingTaskPoller`'s `flushBatch`). While true, persisted storage
    * no longer reflects this tab's in-memory state, so anything about to rebuild `tasks` from a
    * freshly-read persisted snapshot should build on `getState().tasks` instead, and anything
    * checking "does another tab already have this task" (e.g. `addTaskIfMissing`) should not
    * trust a persisted-storage read either. Flips back to `false` as soon as a write through
-   * this store's own mutators or `writeTasks` succeeds again.
+   * this store's own mutators or `writeTasks` succeeds again, or when another tab's write is
+   * adopted (memory then mirrors storage again).
    *
    * This is the single shared source of truth for that fact — treat it as read-only from
-   * outside this module; it's written only by this store's own mutators and by `writeTasks`.
+   * outside this module; it's written only by this store itself.
    */
   hasUnpersistedWrites: boolean
   /**
    * Writes `tasks` to this store the same way its own mutators do, through the single shared
    * safe-write path that also updates `hasUnpersistedWrites`. Anything outside this module that
    * replaces the whole `tasks` array wholesale (currently `PendingTaskPoller`'s batched
-   * `flushBatch` writes and its cross-tab `storage`-event sync) must go through this instead of
-   * calling `setState` directly — otherwise its own write failures would be invisible to this
-   * store's mutators (and vice versa), letting the two silently drift out of sync about whether
-   * persisted storage can currently be trusted.
+   * `flushBatch` writes) must go through this — so its own write failures are visible to this
+   * store's mutators (and vice versa) instead of the two silently drifting out of sync about
+   * whether persisted storage can currently be trusted. (Other tabs' writes need no call here:
+   * the store adopts them itself while subscribed — see `subscribe`.)
    */
   writeTasks: (tasks: PendingTask<TType>[]) => void
 }
@@ -78,7 +116,9 @@ export function isPendingTaskShape(value: unknown): value is PendingTask {
   )
 }
 
-/** Parses the raw string a zustand-persist localStorage entry holds, tolerating garbage/foreign values. */
+/** Parses the raw string this store's localStorage entry holds (see `PERSIST_VERSION` for the
+ *  shape), tolerating garbage/foreign values. Any `version` is accepted as-is — the shape has
+ *  never changed. */
 export function parseTasksFromStorageValue<TType extends string = string>(value: string | null): PendingTask<TType>[] {
   if (!value) return []
   try {
@@ -134,9 +174,8 @@ export function createPendingTaskStore<TType extends string = string>(
     if (hasWarnedAboutTaskListSize || length <= taskListWarnThreshold) return
     hasWarnedAboutTaskListSize = true
     try {
-      // Wrapped in its own try/catch, entirely separate from the setState try/catch below: a
-      // logger whose `warn` itself throws (or a `console` that's missing entirely) must not
-      // prevent the actual task-list write that follows this.
+      // Wrapped in its own try/catch: a logger whose `warn` itself throws (or a `console`
+      // that's missing entirely) must not prevent the actual task-list write that follows this.
       logger.warn(
         `pending-task-kit: tracking ${length} tasks for storageKey "${storageKey}", past the ` +
           `soft warning threshold of ${taskListWarnThreshold}. The whole list is persisted as a ` +
@@ -151,84 +190,168 @@ export function createPendingTaskStore<TType extends string = string>(
     }
   }
 
-  // zustand's persist writes to localStorage synchronously inside setState() — a throwing
-  // write (quota exceeded, Safari private browsing, storage disabled) would otherwise propagate
-  // straight out of whichever caller triggered it. The in-memory state has already been applied
-  // by the time persist's write runs, so swallowing the write failure here just degrades
-  // persistence to this-tab-only rather than crashing the caller (same treatment
-  // `createTtlDedupeCache` already gives this failure mode). This is the ONLY place that writes
-  // `useStore.hasUnpersistedWrites` — this store's own mutators and `writeTasks` (the external
-  // entry point `PendingTaskPoller` uses for its batched/cross-tab writes) both route through
-  // it, so a write failure on either path is visible to both instead of each tracking its own
-  // disconnected flag. Also the single choke point every task-list mutation passes through,
-  // which is why the size warning check runs here too (see also `onRehydrateStorage` below, for
-  // the one path — the initial load — that doesn't go through this).
-  const writeTasks = (tasks: PendingTask<TType>[]): void => {
-    warnIfTaskListTooLarge(tasks.length)
-    try {
-      useStore.setState({ tasks })
-      useStore.hasUnpersistedWrites = false
-    } catch {
-      useStore.hasUnpersistedWrites = true
+  let state: PendingTaskStoreState<TType>
+  /** One record per `subscribe` call; `lastState` is what that subscriber last received. */
+  interface Subscription {
+    listener: PendingTaskStoreListener<TType>
+    lastState: PendingTaskStoreState<TType>
+  }
+  const subscriptions = new Set<Subscription>()
+  /** The raw persisted value memory was last known to match — what this store last wrote, or
+   *  last read. Lets `syncFromStorage` skip an unchanged value instead of replacing every task
+   *  with an equal-but-new object (which would needlessly re-render every subscriber). */
+  let lastKnownRaw: string | null = null
+
+  // Applies a new task list in memory and notifies subscribers. Shared by both kinds of change:
+  // this tab's writes (`writeTasks`, which persists first) and other tabs' writes adopted from
+  // storage (`syncFromStorage`, which must not persist — see there).
+  const commit = (tasks: PendingTask<TType>[]): void => {
+    const nextState: PendingTaskStoreState<TType> = { ...state, tasks }
+    state = nextState
+    // Iterate a snapshot so a subscription added mid-notification doesn't get this change (it
+    // subscribed after it, and starts from `state` already), but re-check membership so one
+    // removed mid-notification isn't called after it unsubscribed. A throwing listener is
+    // consumer code, surfaced the same way as every other consumer callback in this package —
+    // it must neither abort the change that triggered it (possibly `PendingTaskPoller`'s
+    // batched flush) nor starve the listeners after it.
+    for (const subscription of Array.from(subscriptions)) {
+      // A listener that wrote again re-entrantly has already delivered that newer snapshot to
+      // every subscriber (each with its own `lastState` as `previousState`, so no change is
+      // lost from a diff) — delivering this now-stale one afterwards would leave them ending on
+      // an outdated snapshot, so the newest change wins and this one stops here.
+      if (state !== nextState) break
+      if (!subscriptions.has(subscription)) continue
+      const previousState = subscription.lastState
+      subscription.lastState = nextState
+      try {
+        subscription.listener(nextState, previousState)
+      } catch (error) {
+        rethrowAsync(error)
+      }
     }
   }
 
-  const useStore = create<PendingTaskStoreState<TType>>()(
-    persist(
-      (_set, get) => {
-        // `hasUnpersistedWrites` remembers a write failure: once one happens, localStorage no
-        // longer reflects this tab's state, so the next mutator must build on the in-memory
-        // snapshot (`get().tasks`) instead of `readPersisted()` — otherwise it would silently
-        // resurrect the stale persisted snapshot and discard whatever only lives in memory.
-        // Once a write succeeds again, persisted and memory are back in sync, so mutators go
-        // back to reading persisted first (to avoid resurrecting a task another tab removed).
-        const base = (): PendingTask<TType>[] => (useStore.hasUnpersistedWrites ? get().tasks : readPersisted())
+  // Persists synchronously on every write, and a failed write (quota exceeded, Safari private
+  // browsing, storage disabled or absent entirely) degrades persistence to this-tab-only rather
+  // than throwing out of whichever caller triggered it: the in-memory state is applied either
+  // way (same treatment `createTtlDedupeCache` gives this failure mode). This is the only
+  // writer of `hasUnpersistedWrites` besides `syncFromStorage` — this store's own mutators and
+  // `writeTasks` (the external entry point `PendingTaskPoller` uses for its batched writes)
+  // both route through it, so a write failure on either path is visible to both instead of each
+  // tracking its own disconnected flag. Also the single choke point every task-list mutation
+  // passes through, which is why the size warning check runs here too (the initial load and
+  // storage sync are the paths that don't go through this, and check separately).
+  const writeTasks = (tasks: PendingTask<TType>[]): void => {
+    warnIfTaskListTooLarge(tasks.length)
+    let serialized: string | undefined
+    try {
+      serialized = JSON.stringify({ state: { tasks }, version: PERSIST_VERSION })
+    } catch {
+      // `metadata` is free-form (and `check()` progress is merged into it), so a BigInt or a
+      // circular reference in it makes the list unserializable — the same "persistence
+      // degrades to this-tab-only" outcome as a failed write, not a crash in the caller.
+    }
+    const persisted = serialized !== undefined && safeSetItem(storageKey, serialized)
+    store.hasUnpersistedWrites = !persisted
+    if (persisted) lastKnownRaw = serialized as string
+    commit(tasks)
+  }
 
-        return {
-          tasks: [],
-          addTask: (task) => {
-            const next = base().filter((t) => t.id !== task.id)
-            next.push(task)
-            writeTasks(next)
-          },
-          removeTask: (id) => {
-            writeTasks(base().filter((t) => t.id !== id))
-          },
-          updateTask: (id, patch) => {
-            writeTasks(base().map((t) => (t.id === id ? { ...t, ...patch } : t)))
-          },
-          pruneTasksBy: (predicate) => {
-            writeTasks(base().filter(predicate))
-          },
-          clearAllTasks: () => writeTasks([]),
-        }
-      },
-      {
-        name: storageKey,
-        storage: createJSONStorage(() => localStorage),
-        partialize: (state) => ({ tasks: state.tasks }),
-        // Versioned from 0.3.0 on. `migrate` is a deliberate pass-through for anything older
-        // (reported to it as version 0 — i.e. entries written before versioning existed): the
-        // persisted shape hasn't changed, so old data is already in the current shape, and
-        // without a `migrate` zustand would *discard* a version-mismatched entry outright —
-        // silently wiping every pre-upgrade user's task list on load. Bump `version` and add a
-        // real migration branch here only when the shape itself actually changes.
-        version: 1,
-        migrate: (persistedState) => persistedState as { tasks: PendingTask<TType>[] },
-        // The one path that bypasses `writeTasks` (and so its size-warning check) entirely:
-        // zustand's own initial rehydrate-from-storage on store creation calls its internal
-        // `setState` directly, not through `writeTasks`. Without this, an app that starts up
-        // with an already-oversized persisted list would only ever get warned on its *next*
-        // mutation, not on load — the case this app most needs the warning for.
-        onRehydrateStorage: () => (state) => {
-          if (state) warnIfTaskListTooLarge(state.tasks.length)
-        },
-      },
-    ),
-  ) as unknown as PendingTaskStore<TType>
+  // Adopts whatever is persisted right now, in memory only. Reads the current value rather
+  // than trusting a `storage` event's `newValue`: events arrive in order but after the fact, so
+  // by the time an older one is handled storage may already hold something newer. And never
+  // writes back — re-persisting an adopted (possibly already superseded) value would overwrite
+  // another tab's newer write, and re-serializing the whole list on every change in every tab
+  // is wasted work besides. Memory now mirrors storage, so there's nothing unpersisted left.
+  const syncFromStorage = (): void => {
+    const raw = safeGetItem(storageKey)
+    // Unchanged *and* memory already matches it: nothing to adopt. While this tab has
+    // unpersisted writes, memory differs from `lastKnownRaw` by definition, so an unchanged
+    // value (e.g. another tab wrote and then restored it) must still be adopted — skipping it
+    // while clearing the flag would claim memory mirrors storage when it doesn't.
+    if (raw === lastKnownRaw && !store.hasUnpersistedWrites) return
+    store.hasUnpersistedWrites = false
+    lastKnownRaw = raw
+    const tasks = parseTasksFromStorageValue<TType>(raw)
+    warnIfTaskListTooLarge(tasks.length)
+    commit(tasks)
+  }
 
-  useStore.storageKey = storageKey
-  useStore.hasUnpersistedWrites = false
-  useStore.writeTasks = writeTasks
-  return useStore
+  const handleStorageEvent = (event: StorageEvent): void => {
+    // `key: null` is `localStorage.clear()` (in another tab) — it wiped this entry too.
+    if (event.key !== null && event.key !== storageKey) return
+    // sessionStorage changes fire the same event; only localStorage is this store's.
+    try {
+      if (event.storageArea !== null && event.storageArea !== localStorage) return
+    } catch {
+      return // `localStorage` itself inaccessible: nothing this store could sync from anyway
+    }
+    syncFromStorage()
+  }
+
+  // The window listener lives only while someone is subscribed — so a store that nothing
+  // observes holds no global listener (and can be garbage-collected), and one that's observed
+  // never misses another tab's write.
+  const startSyncing = (): void => {
+    if (typeof window === "undefined") return
+    window.addEventListener("storage", handleStorageEvent)
+    // Other tabs may have written while nothing was listening. Skipped while this tab has
+    // unpersisted writes: storage doesn't hold them, so adopting it would drop tasks that
+    // exist only in memory (e.g. with storage unavailable, where it reads back empty).
+    if (!store.hasUnpersistedWrites) syncFromStorage()
+  }
+  const stopSyncing = (): void => {
+    if (typeof window === "undefined") return
+    window.removeEventListener("storage", handleStorageEvent)
+  }
+
+  // `hasUnpersistedWrites` remembers a write failure: once one happens, localStorage no longer
+  // reflects this tab's state, so the next mutator must build on the in-memory snapshot
+  // (`state.tasks`) instead of `readPersisted()` — otherwise it would silently resurrect the
+  // stale persisted snapshot and discard whatever only lives in memory. Once a write succeeds
+  // again, persisted and memory are back in sync, so mutators go back to reading persisted
+  // first (to avoid resurrecting a task another tab removed).
+  const base = (): PendingTask<TType>[] => (store.hasUnpersistedWrites ? state.tasks : readPersisted())
+
+  lastKnownRaw = safeGetItem(storageKey)
+  const initialTasks = parseTasksFromStorageValue<TType>(lastKnownRaw)
+  // The initial load doesn't go through `writeTasks` (nothing to write back), so it checks the
+  // size itself — an app that starts up with an already-oversized persisted list should be
+  // warned on load, not only on its next mutation.
+  warnIfTaskListTooLarge(initialTasks.length)
+  state = {
+    tasks: initialTasks,
+    addTask: (task) => {
+      const next = base().filter((t) => t.id !== task.id)
+      next.push(task)
+      writeTasks(next)
+    },
+    removeTask: (id) => {
+      writeTasks(base().filter((t) => t.id !== id))
+    },
+    updateTask: (id, patch) => {
+      writeTasks(base().map((t) => (t.id === id ? { ...t, ...patch } : t)))
+    },
+    pruneTasksBy: (predicate) => {
+      writeTasks(base().filter(predicate))
+    },
+    clearAllTasks: () => writeTasks([]),
+  }
+
+  const store: PendingTaskStore<TType> = {
+    getState: () => state,
+    subscribe: (listener) => {
+      if (subscriptions.size === 0) startSyncing()
+      const subscription: Subscription = { listener, lastState: state }
+      subscriptions.add(subscription)
+      return () => {
+        if (!subscriptions.delete(subscription)) return
+        if (subscriptions.size === 0) stopSyncing()
+      }
+    },
+    storageKey,
+    hasUnpersistedWrites: false,
+    writeTasks,
+  }
+  return store
 }

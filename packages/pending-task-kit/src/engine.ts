@@ -1,6 +1,7 @@
 import { createLeadershipGate, linkAbortSignal, type LeadershipGate, type Tenure } from "cross-tab-kit"
 import { parseResultRelay, writeResultRelay } from "./result-relay"
-import { DEFAULT_STORAGE_KEY, DEFAULT_TTL_MS, parseTasksFromStorageValue, readPersistedTasks } from "./store"
+import { rethrowAsync } from "./rethrow"
+import { DEFAULT_STORAGE_KEY, DEFAULT_TTL_MS, readPersistedTasks } from "./store"
 import type { PendingTaskStore } from "./store"
 import type {
   PendingTask,
@@ -233,6 +234,7 @@ export class PendingTaskPoller<TType extends string = string> {
 
   private intervalId: ReturnType<typeof setInterval> | undefined
   private storageListener: ((event: StorageEvent) => void) | undefined
+  private unsubscribeStore: (() => void) | undefined
   private isChecking = false
   private pendingForce = false
   private stopped = false
@@ -301,8 +303,8 @@ export class PendingTaskPoller<TType extends string = string> {
     if (this.intervalId !== undefined) return
 
     // Same-tab duplicate detection (see activePollerByStore above): a second live poller on
-    // the same store in the *same* tab never receives the cross-tab relay or task-list sync
-    // ("storage" events don't fire back in the tab that wrote them), so its dispatchDomEvent
+    // the same store in the *same* tab never receives the cross-tab relay ("storage" events
+    // don't fire back in the tab that wrote them), so its dispatchDomEvent
     // listeners silently miss every result another tab detected. Registering unconditionally
     // (even when replacing a stopped instance) keeps the map pointing at whichever instance
     // most recently claimed the store.
@@ -327,21 +329,14 @@ export class PendingTaskPoller<TType extends string = string> {
       this.runTickSafely(false)
     }, this.options.pollTickMs)
 
+    // Keeps the store's own cross-tab task-list sync active for as long as this poller runs —
+    // the store only listens for other tabs' writes while it has a subscriber (see
+    // `PendingTaskStore.subscribe`), and every tick reads `getState().tasks`, which must reflect
+    // them. The listener itself does nothing: each tick reads the current state anyway.
+    this.unsubscribeStore = this.options.store.subscribe(() => {})
+
     if (typeof window !== "undefined") {
       this.storageListener = (event: StorageEvent) => {
-        if (event.key === null) {
-          // localStorage.clear() fires with key: null — treat it as this store being wiped too.
-          this.options.store.writeTasks([])
-          return
-        }
-        if (event.key === this.options.storageKey) {
-          // Goes through the store's own `writeTasks` (not `setState` directly) so a throwing
-          // re-write here (this tab's own quota/private-mode issue racing another tab's write)
-          // updates the same shared `hasUnpersistedWrites` fact this store's mutators and
-          // `flushBatch` read, instead of escaping this handler uncaught.
-          this.options.store.writeTasks(parseTasksFromStorageValue<TType>(event.newValue))
-          return
-        }
         if (this.options.crossTabPollLeaderElection && event.key === this.options.resultRelayKey) {
           const detail = parseResultRelay<TType>(event.newValue)
           if (!detail) return
@@ -352,10 +347,8 @@ export class PendingTaskPoller<TType extends string = string> {
             // A throwing acceptRelayedResult is a consumer bug, same category as an onResult
             // throw below — surface it consistently (queued, not left to escape this raw
             // "storage" event listener callback directly) rather than letting its behavior
-            // differ from the queueMicrotask treatment onCheckError/onResult get elsewhere.
-            queueMicrotask(() => {
-              throw error
-            })
+            // differ from the rethrowAsync treatment onCheckError/onResult get elsewhere.
+            rethrowAsync(error)
             return
           }
           if (accepted) void this.dispatchRelayedResult(detail)
@@ -386,6 +379,8 @@ export class PendingTaskPoller<TType extends string = string> {
       window.removeEventListener("storage", this.storageListener)
       this.storageListener = undefined
     }
+    this.unsubscribeStore?.()
+    this.unsubscribeStore = undefined
     if (this.options.crossTabPollLeaderElection) {
       // Synchronous, best-effort tombstone write (see `LeadershipGate.release`'s doc comment).
       // If it never lands (page unloading right now, storage disabled), the lease just expires
@@ -416,9 +411,7 @@ export class PendingTaskPoller<TType extends string = string> {
       this.options.onLeaderChange?.(isLeader)
     } catch (error) {
       // Same treatment as every other consumer callback in this file — surface it, don't hide it.
-      queueMicrotask(() => {
-        throw error
-      })
+      rethrowAsync(error)
     }
   }
 
@@ -484,9 +477,7 @@ export class PendingTaskPoller<TType extends string = string> {
    *  environment would be, instead of vanishing. */
   private runTickSafely(force: boolean): void {
     this.runTick(force).catch((error: unknown) => {
-      queueMicrotask(() => {
-        throw error
-      })
+      rethrowAsync(error)
     })
   }
 
@@ -496,7 +487,7 @@ export class PendingTaskPoller<TType extends string = string> {
    *
    *  Indexes `store.getState().tasks` into a Map keyed by id rather than doing a linear find
    *  each call — this is called once per pending/failing task per tick, so a plain find would
-   *  make a tick O(n²). The cache keys off the `tasks` array reference, which zustand only
+   *  make a tick O(n²). The cache keys off the `tasks` array reference, which the store only
    *  replaces on an actual write, so it's rebuilt only when the store has genuinely changed. */
   private getLatestTask(task: PendingTask<TType>): PendingTask<TType> {
     const tasks = this.options.store.getState().tasks
@@ -627,10 +618,8 @@ export class PendingTaskPoller<TType extends string = string> {
       // finalize() deliberately leaves uncaught — but unlike finalize() (called from runTick,
       // which flows into runTickSafely's own catch-and-requeue), this method is invoked directly
       // from a raw "storage" event listener with no equivalent wrapper, so it needs its own
-      // queueMicrotask rethrow to surface consistently rather than escaping the listener instead.
-      queueMicrotask(() => {
-        throw error
-      })
+      // rethrowAsync to surface consistently rather than escaping the listener instead.
+      rethrowAsync(error)
     }
   }
 
@@ -776,9 +765,7 @@ export class PendingTaskPoller<TType extends string = string> {
             // through to the normal interval below (as if unset) rather than letting it take
             // down the rest of this tick's tasks; surface it the same way `runTickSafely`
             // surfaces any other consumer-callback exception.
-            queueMicrotask(() => {
-              throw retryBackoffMsError
-            })
+            rethrowAsync(retryBackoffMsError)
             backoffMs = undefined
           }
         }
@@ -862,9 +849,7 @@ export class PendingTaskPoller<TType extends string = string> {
             // this task's `finalCheckAttempted` entry (fall through to the normal handling
             // below as "not intercepted") or take down the tick; surface it the same way
             // `runTickSafely` surfaces any other consumer-callback exception.
-            queueMicrotask(() => {
-              throw onCheckErrorError
-            })
+            rethrowAsync(onCheckErrorError)
             intercepted = false
           }
 
@@ -949,17 +934,13 @@ export class PendingTaskPoller<TType extends string = string> {
         // anything else unexpected, surfaced the same way every other consumer-adjacent
         // exception in this file is: queued, not silently swallowed, and not left to take the
         // rest of this finally block's work (onTick, pendingForce) down with it.
-        queueMicrotask(() => {
-          throw error
-        })
+        rethrowAsync(error)
       }
       if (this.options.onTick) {
         try {
           this.options.onTick({ durationMs: Date.now() - now, taskCount: tasks.length })
         } catch (error) {
-          queueMicrotask(() => {
-            throw error
-          })
+          rethrowAsync(error)
         }
       }
       if (this.pendingForce && !this.stopped) {

@@ -14,7 +14,7 @@ export default defineConfig({
   workers: 1,
   webServer: {
     // Serves the whole project root (not just test-e2e/) so fixture.ts's `../dist/index.js`
-    // import, and dist/index.js's own `zustand`/`zustand/middleware` bare imports, all resolve
+    // import, and dist/index.js's own `cross-tab-kit/advanced` bare import, all resolve
     // against this project's real node_modules — a bundler-free Vite dev server transparently
     // resolves bare specifiers for any file in its module graph, regardless of whether that
     // file lives in test-e2e/, dist/, or elsewhere under the project root.

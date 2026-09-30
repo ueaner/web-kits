@@ -11,7 +11,7 @@ notification channel (toasts, redirects, cache invalidation) is deliberately
 ## Install
 
 ```bash
-pnpm add pending-task-kit zustand
+pnpm add pending-task-kit
 # React binding also needs react as a peer dep (already true in a React app)
 ```
 
@@ -32,7 +32,10 @@ pnpm add pending-task-kit zustand
   backoff" below). `signal` is an `AbortSignal` you can ignore entirely (existing handlers
   that only take `task` keep working unmodified) or wire into your own request.
 - **Registry** (`PendingTaskRegistry`) — a plain `{ [type]: handler }` map.
-- **Store** — a zustand store, persisted to `localStorage`, holding the task list. Warns
+- **Store** — a small built-in store (`getState()`/`subscribe()`, no state-library
+  dependency), persisted to `localStorage`, holding the task list. While anything is subscribed
+  (`usePendingTasks`, a running poller, your own `subscribe`) it also adopts other tabs' writes
+  to the same key, in memory only. Warns
   once (`console.warn`) if the tracked task count crosses `taskListWarnThreshold` (default 200) — the whole list is one JSON blob rewritten on every change, so a very large list
   risks the ~5MB per-origin quota.
 - **Poller** (`PendingTaskPoller`) — the engine: scans tasks on an interval, calls the
@@ -135,6 +138,39 @@ function PendingTaskNotifier() {
 
 Mount `<PendingTaskNotifier />` once near your app root.
 
+To render the task list, subscribe with `usePendingTasks` — it re-renders only when the store
+changes, including another tab's write (subscribing keeps the store in sync across tabs; no
+poller needed in that tab). An optional selector derives something from `tasks`; an array result with the same
+elements as last time comes back as the same array, so a filter is referentially stable even
+written inline. Any other freshly built value (an object, an array of new objects) is only
+stable if the selector itself is — hoist it or wrap it in `useCallback` before using such a
+result as an effect/memo dependency. Under SSR it renders an empty list (no `localStorage` on
+the server) and switches to the persisted tasks after hydration. Mutators go through
+`store.getState()`:
+
+```tsx
+import { usePendingTasks } from "pending-task-kit/react"
+
+function PendingTaskList() {
+  const tasks = usePendingTasks(store)
+  // or: const exports = usePendingTasks(store, (tasks) => tasks.filter((t) => t.type === "export"))
+  return (
+    <ul>
+      {tasks.map((task) => (
+        <li key={task.id}>
+          {task.type} <button onClick={() => store.getState().removeTask(task.id)}>Dismiss</button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+```
+
+Outside React, `store.subscribe((state, previousState) => ...)` (returns an unsubscribe
+function) is the same primitive — bind any other framework's reactivity to it. `previousState`
+is the last snapshot _that listener_ received, so diffing the pair never misses a change, even
+when another listener writes to the store from inside its own callback.
+
 ## Cancellation, retry backoff, and observability (all optional)
 
 `stop()` aborts the `AbortSignal` passed to whichever `handler.check()` call is currently in
@@ -217,7 +253,7 @@ notifying," consistently, regardless of which tab happened to detect the result.
 
 Only one `PendingTaskPoller` instance should exist per tab per store — a `storage` event never
 fires back in the tab that made the write, so a second poller instance sharing the same store
-in the _same_ tab would never receive this relay (or the task-list sync above) at all. Starting
+in the _same_ tab would never receive this relay at all. Starting
 a second one while the first is still running warns once at runtime (via `logger` — see
 "Cancellation, retry backoff, and observability" above).
 
@@ -349,7 +385,10 @@ they're documented somewhere instead of only in source comments:
   dispatched as that outcome instead; a still-`pending` answer or a throw resolves to `expired`
   (unless `onCheckError` intercepts the throw — then the task is left as-is and still gets its
   final check once polling resumes). With cross-tab leader election on, only the leader tab
-  expires tasks, so an expiry is dispatched once and relayed like any other result.
+  expires tasks and relays the result like any other — which rules out every open tab
+  dispatching the same expiry, but, exactly as for `success`/`failure`, leadership changing
+  hands mid-tick can still rarely dispatch one twice; configure `claimResultOnce` (see below)
+  if you need a strict once-only guarantee.
 - **Wall-clock dependent** (`Date.now()` throughout). A clock stepping _backward_ just delays
   polling/lease-renewal/dedupe harmlessly. A clock jumping _forward_ can make a batch of tasks
   expire all at once and make leases/dedupe records expire early — fencing (see
@@ -357,7 +396,7 @@ they're documented somewhere instead of only in source comments:
   available for a moment.
 - **Leadership rotates routinely, even in foreground tabs.** The lease's TTL defaults to 8s
   (`pollTickMs` × 4), and it's only _renewed_ by ticks that actually have a due task to check
-  — so with the default 10s `pollIntervalMs` the lease expires between checks anyway and the
+  (or an expired one to resolve) — so with the default 10s `pollIntervalMs` the lease expires between checks anyway and the
   next due tick re-contends for it, in whichever tab gets there first. Backgrounded tabs make
   this much more pronounced: Chrome (and others) throttle a backgrounded tab's timers down to
   as infrequently as once a minute, so a backgrounded leader readily loses leadership to
@@ -377,9 +416,6 @@ they're documented somewhere instead of only in source comments:
   a fresh microtask rather than silently swallowed or left as an unhandled rejection, so a bug
   in your own `onResult`/`onCheckError`/etc. is as visible as any other uncaught error in your
   app, not hidden inside this package.
-- **`zustand`'s own `persist` middleware logs its own `console.warn` on a storage failure** (SSR,
-  storage fully unavailable) — that noise comes from zustand itself, not from this package,
-  which otherwise degrades storage failures quietly (see `hasUnpersistedWrites`).
 - **A task whose `type` doesn't match any registry entry** (typo'd, or a handler that was
   removed/renamed after the task was created) sits until its TTL expires — the poller warns
   once per such `type` (via `logger`, defaulting to `console`) so it isn't silent, but nothing
@@ -424,8 +460,10 @@ browser runtime with no Node dependency — this is purely about the toolchain).
 
 `pnpm typecheck && pnpm lint && pnpm test && pnpm build` should all pass; `pnpm test:e2e` runs
 a small real-Chromium Playwright suite (`test-e2e/`) that specifically exercises cross-tab
-`navigator.locks` arbitration and genuine `storage` events — the one thing the jsdom-based
-`pnpm test` suite structurally can't do.
+`navigator.locks` arbitration and genuine `storage` events, plus the React binding in the real
+React DOM renderer (including hydrating markup server-rendered in Node) — what the jsdom-based
+`pnpm test` suite structurally can't do faithfully. It runs against the built `dist/`, so run
+`pnpm build` first.
 
 This package uses [Changesets](https://github.com/changesets/changesets) for versioning.
 Every change that should land in a release needs a changeset: run `pnpm changeset`, describe

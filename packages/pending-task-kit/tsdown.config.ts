@@ -9,5 +9,5 @@ export default defineConfig({
   dts: true,
   clean: true,
   platform: "neutral",
-  external: ["react", "zustand", "zustand/middleware"],
+  external: ["react"],
 })

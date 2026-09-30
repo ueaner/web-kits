@@ -9,7 +9,7 @@
 ## 安装
 
 ```bash
-pnpm add pending-task-kit zustand
+pnpm add pending-task-kit
 # React 绑定还需要 react 作为 peer dependency(在 React 应用里通常已经有了)
 ```
 
@@ -29,7 +29,9 @@ pnpm add pending-task-kit zustand
   `signal` 是一个 `AbortSignal`,可以完全不管(只写 `task` 一个参数的现有 handler 不受
   影响),也可以接进你自己的请求里。
 - **Registry**(`PendingTaskRegistry`)—— 一个普通的 `{ [type]: handler }` 映射。
-- **Store** —— 一个 zustand store,持久化到 `localStorage`,保存任务列表。跟踪的任务数量
+- **Store** —— 一个内置的小型 store(`getState()`/`subscribe()`,不依赖任何状态管理库),
+  持久化到 `localStorage`,保存任务列表。只要有订阅者(`usePendingTasks`、正在运行的
+  poller、你自己的 `subscribe`),它还会在内存里同步其它标签页对同一个 key 的写入。跟踪的任务数量
   超过 `taskListWarnThreshold`(默认 200)时会 `console.warn` 一次——整份列表是单个 JSON
   blob,每次变化都要整个重写,数量太大会有撞上 ~5MB 单 origin 配额的风险。
 - **Poller**(`PendingTaskPoller`)—— 引擎本体:按间隔扫描任务,调用对应的 handler,并将
@@ -130,6 +132,36 @@ function PendingTaskNotifier() {
 
 在应用根部挂载一次 `<PendingTaskNotifier />` 即可。
 
+要渲染任务列表,用 `usePendingTasks` 订阅——只在 store 变化时才重新渲染,包括其它标签页的
+写入(订阅本身就会让 store 跨标签页同步,这个标签页不需要挂 poller)。可选的 selector
+从 `tasks` 派生数据;如果结果是数组、并且元素和上次完全相同,返回的就是上次那个数组,所以
+filter 即使写成内联函数也能保持引用稳定。其它每次新构造的值(对象、由新对象组成的数组)
+只有在 selector 本身稳定时才稳定——要把这类结果用作 effect/memo 的依赖,先把 selector 提到
+组件外或用 `useCallback` 包起来。SSR 时它渲染空列表(服务端没有 `localStorage`),水合完成后
+再切换为持久化的任务。修改操作通过 `store.getState()` 调用:
+
+```tsx
+import { usePendingTasks } from "pending-task-kit/react"
+
+function PendingTaskList() {
+  const tasks = usePendingTasks(store)
+  // 或者: const exports = usePendingTasks(store, (tasks) => tasks.filter((t) => t.type === "export"))
+  return (
+    <ul>
+      {tasks.map((task) => (
+        <li key={task.id}>
+          {task.type} <button onClick={() => store.getState().removeTask(task.id)}>移除</button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+```
+
+React 之外,`store.subscribe((state, previousState) => ...)`(返回取消订阅函数)就是同一个
+底层原语——其它框架的响应式可以直接接到它上面。`previousState` 是*这个监听器*上一次收到的
+快照,所以即使别的监听器在回调里又写了 store,对比这两个值也不会漏掉任何变化。
+
 ## 取消、重试 backoff 与观测(均为可选)
 
 `stop()` 会中止当前正在飞行中的那次 `handler.check()` 调用所拿到的 `AbortSignal`(如果
@@ -207,7 +239,7 @@ task 完全不发起任何网络请求。这就是 `crossTabPollLeaderElection`,
 
 同一个标签页、同一个 store 下应该只存在一个 `PendingTaskPoller` 实例——`storage` 事件
 永远不会在发起写入的那个标签页自己身上触发,所以同一个标签页里如果有第二个 poller 实例
-共享同一个 store,它将完全收不到这份广播(也收不到上面提到的任务列表同步)。在第一个实例
+共享同一个 store,它将完全收不到这份广播。在第一个实例
 仍在运行时又 `start()` 第二个实例,会在运行时告警一次(通过 `logger`,见上文
 "取消、重试 backoff 与观测"一节)。
 
@@ -327,13 +359,15 @@ clearResultRelay(resultRelayKey) // 用你传入的那个 key,没传的话就是
   持有轮询 leadership 的 tick 上):若返回确定的 `success`/`failure`,就按该结局派发;
   仍返回 `pending` 或抛异常,则归结为 `expired`(除非 `onCheckError` 拦截了这次异常——
   此时任务保持原样,恢复轮询后仍会获得最后一次 check)。开启跨标签页选主时,只有 leader
-  标签页会处理过期,所以一次过期只派发一次,并像其它结果一样 relay 给其它标签页。
+  标签页会处理过期,并像其它结果一样 relay 给其它标签页——这排除了每个标签页各派发一次的
+  情况,但和 `success`/`failure` 一样,tick 中途 leadership 易主时仍有小概率重复派发;需要严格
+  只派发一次,请配置 `claimResultOnce`(见下文)。
 - **全链路依赖墙钟(`Date.now()`)**。时钟往回走只会让轮询/续约/去重变慢一点,无害。
   时钟往前跳可能让一批任务同时过期,也可能让 lease/去重记录提前过期——fencing
   (见"跨标签页轮询选主"一节)仍然保证 leadership 判断是*正确*的,只是那一刻可用性会
   打折。
 - **leadership 会例行轮换,前台标签页也一样**。lease 的 TTL 默认 8 秒(`pollTickMs` × 4),
-  而且只在*有到期任务要检查*的 tick 上才续约——所以默认 `pollIntervalMs` 为 10 秒时,lease
+  而且只在*有到期任务要检查*(或有过期任务要处理)的 tick 上才续约——所以默认 `pollIntervalMs` 为 10 秒时,lease
   在两次 check 之间本来就会过期,下一个 due 的 tick 重新竞争,谁先到谁当 leader。后台标签页
   会让这更明显:Chrome(以及其它浏览器)会把后台标签页的计时器节流到最低每分钟一次,正在
   后台的 leader 很容易把 leadership 让给另一个(可能也在后台的)标签页,甚至两个后台标签页
@@ -350,9 +384,6 @@ clearResultRelay(resultRelayKey) // 用你传入的那个 key,没传的话就是
   microtask 里重新抛出,而不是被静默吞掉或者变成一个 unhandled rejection,这样你自己
   `onResult`/`onCheckError` 等回调里的 bug 就和你应用里其它 uncaught 错误一样显眼,不会
   被这个包藏起来。
-- **`zustand` 自己的 `persist` 中间件在存储失败时会打自己的 `console.warn`**(SSR、存储
-  完全不可用等场景)——这条噪音来自 zustand 自身,不是这个包发出的;这个包自己对存储
-  失败的处理是安静降级的(见 `hasUnpersistedWrites`)。
 - **`type` 和 registry 里任何 handler 都对不上的任务**(打错字,或者 handler 在任务创建
   之后被删除/改名了),会一直挂到 TTL 才过期——poller 会对每个这样的 `type` 告警一次
   (通过 `logger`,默认 `console`),所以不再是完全无感的,但任务本身不会被挽救。把
@@ -396,8 +427,9 @@ Node——这只是工具链的要求)。
 
 `pnpm typecheck && pnpm lint && pnpm test && pnpm build` 应该全部通过;`pnpm test:e2e`
 会跑一个基于真实 Chromium 的小型 Playwright 套件(`test-e2e/`),专门验证跨标签页
-`navigator.locks` 仲裁和真实的 `storage` 事件——这正是基于 jsdom 的 `pnpm test` 那套
-测试结构性做不到的事。
+`navigator.locks` 仲裁和真实的 `storage` 事件,以及 React 绑定在真实 React DOM 渲染器下的
+表现(包括水合在 Node 里服务端渲染出的 HTML)——这些正是基于 jsdom 的 `pnpm test` 那套测试
+没法如实验证的。它跑的是构建后的 `dist/`,所以要先 `pnpm build`。
 
 这个包用 [Changesets](https://github.com/changesets/changesets) 管理版本号。任何应该
 出现在发布记录里的改动都需要一个 changeset:运行 `pnpm changeset`,描述改动内容,选

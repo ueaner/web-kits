@@ -341,6 +341,8 @@ describe("PendingTaskPoller", () => {
     poller.start()
     expect(store.getState().tasks).toHaveLength(1)
 
+    // What another tab's clear() does: the shared storage is emptied, then this tab is told.
+    localStorage.clear()
     window.dispatchEvent(new StorageEvent("storage", { key: null, newValue: null }))
 
     expect(store.getState().tasks).toHaveLength(0)
