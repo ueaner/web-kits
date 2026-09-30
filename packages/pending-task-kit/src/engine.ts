@@ -34,8 +34,10 @@ export interface PendingTaskPollerOptions<TType extends string = string> {
   store: PendingTaskStore<TType>
   registry: PendingTaskRegistry<TType>
   /**
-   * Called for every `success`/`failure`/`error` outcome — including ones a handler marked
-   * `silentOnSuccess`/`silentOnFailure`. This is where apps show a toast, navigate, or
+   * Called for every `success`/`failure`/`error`/`expired` outcome — including ones a handler
+   * marked `silentOnSuccess`/`silentOnFailure`/`silentOnExpiry` (the last one is on by
+   * default, so `expired` arrives with `detail.silent: true` unless the handler opts out). This
+   * is where apps show a toast, navigate, or
    * invalidate a cache — the engine has no opinion on any of that, so it never withholds a
    * call here on your behalf; check `detail.silent` yourself if some of those reactions
    * (a toast) should be skipped while others (a cache invalidation, a view switch) still run.
@@ -192,9 +194,9 @@ function describeError(error: unknown): string {
  * matching handler's `check()`, and resolves each task to `pending` (re-check later),
  * `success`/`failure` (removed, then dispatched via `onResult` with `detail.silent` set from
  * `silentOnSuccess`/`silentOnFailure`), `error` (same, `silent` from `silentOnFailure`) when
- * `check()` itself kept failing, or silently expired (removed, never dispatched at all — not
- * even a silent `onResult` call — unless the handler opts into `finalCheckOnExpiry` for one
- * last check).
+ * `check()` itself kept failing, or `expired` (same, `silent` from `silentOnExpiry`, which
+ * defaults to `true`) when the TTL ran out first — after one last check if the handler opts
+ * into `finalCheckOnExpiry`.
  *
  * When multiple tabs share a store, `crossTabPollLeaderElection` (on by default) ensures only
  * one of them actually polls at a time — see that option and `resultRelayKey` for how the
@@ -542,16 +544,23 @@ export class PendingTaskPoller<TType extends string = string> {
     this.finalCheckAttempted.delete(task.id)
     batch.set(task.id, null)
 
-    if (detail.status === "expired") return
-
     // `silent` used to gate this entire method (claimResultOnce/onResult/relay/DOM event) —
     // it no longer does. This package has no notion of what a "notification" even is (see
     // README's own "notification channel deliberately not part of this package"), so an
     // engine-level decision to withhold onResult entirely was the engine quietly assuming
     // onResult always means "show a toast" — untrue for callers that also use it to switch a
     // view or invalidate a cache on a "silent" success. `silent` is now purely informational,
-    // carried on `detail` for `onResult` to act on itself.
-    const silent = (detail.status === "success" ? handler?.silentOnSuccess : handler?.silentOnFailure) ?? false
+    // carried on `detail` for `onResult` to act on itself. `expired` followed the same logic
+    // later: it used to return before any of this, which left a caller's own cleanup (clearing
+    // a "processing" state, refreshing a list) with no signal at all for a task that timed out.
+    // Unlike the other two flags it defaults to `true` — a timeout is typically noticed long
+    // after the fact (often on a later visit), where an unprompted toast is more noise than news.
+    const silent =
+      (detail.status === "success"
+        ? handler?.silentOnSuccess
+        : detail.status === "expired"
+          ? (handler?.silentOnExpiry ?? true)
+          : handler?.silentOnFailure) ?? false
 
     let claimed: boolean
     try {
@@ -654,9 +663,72 @@ export class PendingTaskPoller<TType extends string = string> {
       // Set once any leadership check fails this tick (claim refused, a fence mismatch, or this
       // poller having been stop()ped mid-tick) so every later due task skips straight past its
       // own leadership check instead of redundantly re-attempting one that can only fail the
-      // same way again — while still letting tasks that need no leadership at all (pure local
-      // expiry bookkeeping, above) keep being processed normally for the rest of this tick.
+      // same way again — while still letting tasks that need no leadership at all (ones merely
+      // not due yet) keep being skipped cheaply for the rest of this tick.
       let leadershipLost = false
+
+      // Gate for anything that acts on a task: a real `handler.check()`, and expiring a task too
+      // — expiry dispatches `onResult`/the relay/the DOM event just like any other outcome (see
+      // finalize()), so with `crossTabPollLeaderElection` on it must happen in the one leader
+      // tab, not in every open tab that scans past the same expired task (each would otherwise
+      // dispatch it itself *and* relay it to all the others). Returns `false` when this tab
+      // must leave `task` alone this tick; `releaseFinalCheck` is set for a task about to use its
+      // finalCheckOnExpiry allowance, so that allowance isn't leaked by a check that never ran.
+      const holdLeadership = async (task: PendingTask<TType>, releaseFinalCheck: boolean): Promise<boolean> => {
+        // Checked unconditionally (election on or off), before the `tenure === null` gate
+        // below, not inside it: `stop()` can be called from consumer code (e.g. `onResult`
+        // calling `poller.stop()`) between two tasks in the same tick, after `tenure` already
+        // holds an earlier task's still-valid claim. If this check lived inside the
+        // `tenure === null` branch, it would never run for that later task — `tenure` being set
+        // would skip the whole block and `handler.check()` would fire anyway (its response
+        // still gets discarded by the post-check reconfirm's own `stopped` check, so no data
+        // corruption — just a wasted request this check exists to prevent), or an expired task
+        // would dispatch `onResult` on an already-stopped poller. A skipped expired task isn't
+        // lost: it's still in the store, and expires on whichever poller runs next.
+        if (leadershipLost || this.stopped) {
+          leadershipLost = true
+          if (releaseFinalCheck) this.finalCheckAttempted.delete(task.id)
+          return false
+        }
+        if (!this.options.crossTabPollLeaderElection) return true
+        // Cross-tab poll-leader election: claim/renew only right before actually acting on a
+        // task — tasks skipped by the cheap "not due yet" judgment never touch this, so they
+        // don't cost a localStorage round trip or a cross-tab storage-event broadcast just
+        // because this tick happened to scan past them. Only the first such task in a tick
+        // claims here; every checked task's post-check reconfirm already renews `tenure` for
+        // whichever task comes next, so re-claiming again immediately beforehand would just be
+        // a redundant localStorage write. Losing the lease here means another tab has already
+        // taken over (or this poller has itself been stopped) — skip this and every later task
+        // needing leadership for the rest of the tick (a new leader, if any, will pick up where
+        // this tab left off on its own schedule).
+        if (tenure === null) {
+          let claimed: Tenure | null
+          try {
+            claimed = await this.gate!.acquire()
+          } catch (error) {
+            // A rejected claim must not leave this task's finalCheckAttempted entry dangling
+            // past this tick — surface the error the same way as before, just without leaking
+            // that bookkeeping first (see reconfirmLeadership's matching catch).
+            if (releaseFinalCheck) this.finalCheckAttempted.delete(task.id)
+            throw error
+          }
+          // Also re-checks `this.stopped` here, not just before the `await` above: `stop()`
+          // is a genuine async yield away (real cross-tab Web Lock arbitration), so it can
+          // land while this call was pending. Claiming succeeded and nothing here would be
+          // outright wrong to act on, but proceeding to call handler.check() (or dispatch an
+          // expiry) on an already-stopped poller is exactly the wasted/misleading work this
+          // whole check exists to prevent.
+          if (this.stopped || !claimed) {
+            leadershipLost = true
+            this.setLeaderStatus(false)
+            if (releaseFinalCheck) this.finalCheckAttempted.delete(task.id)
+            return false
+          }
+          tenure = claimed
+          this.setLeaderStatus(true)
+        }
+        return true
+      }
 
       for (const task of tasks) {
         const handler = this.options.registry[task.type]
@@ -666,7 +738,7 @@ export class PendingTaskPoller<TType extends string = string> {
         if (!handler) {
           // No handler to poll with (e.g. removed/renamed since this task was created) — the
           // only thing we can still do for it is let it expire instead of lingering forever.
-          // Pure local bookkeeping, no network call — doesn't need leadership. Warn once per
+          // No network call, but expiring still needs leadership (see holdLeadership). Warn once per
           // type (not once per tick — this branch runs on every tick until the TTL expires):
           // a silent linger here previously meant a typo'd type or a deleted/renamed handler
           // was indistinguishable from a task that's just slow to finish.
@@ -683,7 +755,7 @@ export class PendingTaskPoller<TType extends string = string> {
               // A diagnostic channel must never take down the tick it's diagnosing.
             }
           }
-          if (expired) {
+          if (expired && (await holdLeadership(task, false))) {
             await this.finalize(task, { status: "expired" }, handler, batch)
           }
           continue
@@ -725,9 +797,10 @@ export class PendingTaskPoller<TType extends string = string> {
         const finalAttemptDone = this.finalCheckAttempted.has(task.id)
 
         if (expired && (!handler.finalCheckOnExpiry || finalAttemptDone)) {
-          // Same as above: dropping a task that isn't getting a last look is pure local
-          // bookkeeping, no network call, doesn't need leadership.
-          await this.finalize(task, { status: "expired" }, handler, batch)
+          // No network call, but still needs leadership: expiring dispatches (see holdLeadership).
+          if (await holdLeadership(task, false)) {
+            await this.finalize(task, { status: "expired" }, handler, batch)
+          }
           continue
         }
 
@@ -737,58 +810,7 @@ export class PendingTaskPoller<TType extends string = string> {
           this.finalCheckAttempted.add(task.id)
         }
 
-        // Cross-tab poll-leader election: claim/renew only right before doing the actual
-        // network work — tasks skipped above by the cheap local judgments never touch this,
-        // so they don't cost a localStorage round trip or a cross-tab storage-event broadcast
-        // just because this tick happened to scan past them. Only the first such task in a tick
-        // claims here; every task's post-check reconfirm below already renews `tenure` for
-        // whichever task comes next, so re-claiming again immediately beforehand would just be
-        // a redundant localStorage write. Losing the lease here means another tab has already
-        // taken over (or this poller has itself been stopped) — skip this and every later due
-        // task's network work for the rest of the tick (a new leader, if any, will pick up
-        // where this tab left off on its own schedule) without abandoning the tasks after it
-        // that need no leadership at all.
-        if (this.options.crossTabPollLeaderElection) {
-          // Checked unconditionally, before the `tenure === null` gate below, not inside it:
-          // `stop()` can be called from consumer code (e.g. `onResult` calling `poller.stop()`)
-          // between two tasks in the same tick, after `tenure` already holds an earlier task's
-          // still-valid claim. If this check lived inside the `tenure === null` branch, it
-          // would never run for that later task — `tenure` being set would skip the whole
-          // block, `handler.check()` would fire anyway (its response still gets discarded by
-          // the post-check reconfirm's own `stopped` check, so no data corruption — just a
-          // wasted request this check exists to prevent).
-          if (leadershipLost || this.stopped) {
-            leadershipLost = true
-            if (expired) this.finalCheckAttempted.delete(task.id)
-            continue
-          }
-          if (tenure === null) {
-            let claimed: Tenure | null
-            try {
-              claimed = await this.gate!.acquire()
-            } catch (error) {
-              // A rejected claim must not leave this task's finalCheckAttempted entry dangling
-              // past this tick — surface the error the same way as before, just without leaking
-              // that bookkeeping first (see reconfirmLeadership's matching catch).
-              if (expired) this.finalCheckAttempted.delete(task.id)
-              throw error
-            }
-            // Also re-checks `this.stopped` here, not just before the `await` above: `stop()`
-            // is a genuine async yield away (real cross-tab Web Lock arbitration), so it can
-            // land while this call was pending. Claiming succeeded and nothing here would be
-            // outright wrong to act on, but proceeding to call handler.check() on an
-            // already-stopped poller is exactly the wasted/misleading work this whole check
-            // exists to prevent.
-            if (this.stopped || !claimed) {
-              leadershipLost = true
-              this.setLeaderStatus(false)
-              if (expired) this.finalCheckAttempted.delete(task.id)
-              continue
-            }
-            tenure = claimed
-            this.setLeaderStatus(true)
-          }
-        }
+        if (!(await holdLeadership(task, expired))) continue
 
         let result: PendingTaskCheckResult
         // Reachable from stop() (a synchronous method) so a stopped poller can actually cancel
@@ -903,9 +925,7 @@ export class PendingTaskPoller<TType extends string = string> {
             metadata: { ...latest.metadata, ...result.progress },
           })
           if (expired) {
-            // finalCheckOnExpiry's one last look still came back pending — expire quietly now.
-            // (status is "expired" here, so finalize() returns before it could ever throw —
-            // no try/catch needed, same as the other expiry finalize calls above.)
+            // finalCheckOnExpiry's one last look still came back pending — expire now.
             await this.finalize(task, { status: "expired" }, handler, batch)
           }
           continue

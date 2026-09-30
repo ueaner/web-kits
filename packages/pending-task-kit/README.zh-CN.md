@@ -25,7 +25,7 @@ pnpm add pending-task-kit zustand
   轮询你的后端并返回 `{ status: "pending" | "success" | "failure", progress?, data? }`——
   `data` 是自由形式的负载(一个链接、一条消息,或任何你 `onResult` 需要的东西;见下文),
   此外还有按类型调节的选项(`pollIntervalMs`、`ttlMs`、`finalCheckOnExpiry`、
-  `silentOnSuccess`/`silentOnFailure`、`retryBackoffMs`——见下文"取消与重试 backoff"一节)。
+  `silentOnSuccess`/`silentOnFailure`/`silentOnExpiry`、`retryBackoffMs`——见下文"取消与重试 backoff"一节)。
   `signal` 是一个 `AbortSignal`,可以完全不管(只写 `task` 一个参数的现有 handler 不受
   影响),也可以接进你自己的请求里。
 - **Registry**(`PendingTaskRegistry`)—— 一个普通的 `{ [type]: handler }` 映射。
@@ -33,12 +33,12 @@ pnpm add pending-task-kit zustand
   超过 `taskListWarnThreshold`(默认 200)时会 `console.warn` 一次——整份列表是单个 JSON
   blob,每次变化都要整个重写,数量太大会有撞上 ~5MB 单 origin 配额的风险。
 - **Poller**(`PendingTaskPoller`)—— 引擎本体:按间隔扫描任务,调用对应的 handler,并将
-  每个任务归结为 `success`/`failure`,或者 `error`(`check()` 本身持续抛错直到达到
-  `maxFailureCount`)——这三种情况**都会**通过 `onResult` 派发,`silentOnSuccess`/
-  `silentOnFailure` 只会体现在派发的 `detail.silent` 字段上,由 `onResult` 自己决定要不要
-  据此跳过某些反应(引擎本身从不替你决定要不要调用 `onResult`,见 `onResult` 自己的文档
-  注释);或者在 TTL 先耗尽时静默归结为 `expired`,这种情况完全不会走到 `onResult`。
-  `error`/`expired` 都是引擎自己的判断,handler 本身永远不会返回这两种状态。
+  每个任务归结为 `success`/`failure`、`error`(`check()` 本身持续抛错直到达到
+  `maxFailureCount`)或 `expired`(TTL 先耗尽)——这四种情况**都会**通过 `onResult` 派发,
+  `silentOnSuccess`/`silentOnFailure`/`silentOnExpiry` 只会体现在派发的 `detail.silent`
+  字段上,由 `onResult` 自己决定要不要据此跳过某些反应(引擎本身从不替你决定要不要调用
+  `onResult`,见 `onResult` 自己的文档注释)。`silentOnExpiry` 默认为 `true`,另外两个默认
+  为 `false`。`error`/`expired` 都是引擎自己的判断,handler 本身永远不会返回这两种状态。
 
 ## 用法(核心,不涉及 React)
 
@@ -87,12 +87,13 @@ const poller = new PendingTaskPoller({
   onResult: (detail) => {
     // 被 silentOnSuccess/silentOnFailure 标记的结果同样会调用到这里——detail.silent
     // 就是标记。全部跳过是一种选择,只跳过 toast 也是一种。
+    // "expired" 默认带 silent: true,除非 handler 设置了 silentOnExpiry: false。
     if (detail.silent) return
     const data = detail.data as { href?: string; message?: string } | undefined
     if (detail.status === "success") showToast(data?.message ?? "Done", { href: data?.href })
     if (detail.status === "failure") showToast(data?.message ?? "Failed", { variant: "error" })
     // detail.status 也可能是 "error"(check() 自己持续失败)——是否需要单独的提示文案由你
-    // 决定;"expired" 永远不会到达 onResult。
+    // 决定。
   },
   onCheckError: (error) => {
     // 对于那种意味着"终止本轮 tick、不计入正常失败次数"的错误返回 true——比如会话已过期。
@@ -316,8 +317,19 @@ clearResultRelay(resultRelayKey) // 用你传入的那个 key,没传的话就是
   Firefox 69+)。这是 0.6.0 起的变化:此前是 ES2020 目标,产物会把 class field 降级掉。
   如果你的目标浏览器低于这个基线且构建流程不会降级 `node_modules` 里的依赖,请在打包
   阶段自行处理。
+- **`expired` 和其它结局一样会派发,只是默认 `silent`**。`expired` 意味着 TTL 耗尽时
+  仍没有任何确定答案——任务可能早就在服务端成功了,只是轮询方不再跟踪了。这种事通常
+  不值得弹 toast(默认 TTL 是 24 小时,到那时用户通常早已离开页面),所以
+  `silentOnExpiry` 默认为 `true`;但 `onResult`(以及 result relay 和 DOM 事件)照样会
+  收到这次调用,依赖"任务已结束"的收尾逻辑——清掉"处理中"状态、刷新列表——对过期
+  任务同样会执行。设置 `silentOnExpiry: false` 则以 `detail.silent: false` 派发。开启
+  `finalCheckOnExpiry: true` 时,handler 会先获得最后一次 `check()`(在 TTL 耗尽后第一个
+  持有轮询 leadership 的 tick 上):若返回确定的 `success`/`failure`,就按该结局派发;
+  仍返回 `pending` 或抛异常,则归结为 `expired`(除非 `onCheckError` 拦截了这次异常——
+  此时任务保持原样,恢复轮询后仍会获得最后一次 check)。开启跨标签页选主时,只有 leader
+  标签页会处理过期,所以一次过期只派发一次,并像其它结果一样 relay 给其它标签页。
 - **全链路依赖墙钟(`Date.now()`)**。时钟往回走只会让轮询/续约/去重变慢一点,无害。
-  时钟往前跳可能让一批任务同时静默过期,也可能让 lease/去重记录提前过期——fencing
+  时钟往前跳可能让一批任务同时过期,也可能让 lease/去重记录提前过期——fencing
   (见"跨标签页轮询选主"一节)仍然保证 leadership 判断是*正确*的,只是那一刻可用性会
   打折。
 - **leadership 会例行轮换,前台标签页也一样**。lease 的 TTL 默认 8 秒(`pollTickMs` × 4),

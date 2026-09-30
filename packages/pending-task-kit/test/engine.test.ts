@@ -80,7 +80,7 @@ describe("PendingTaskPoller", () => {
     poller.stop()
   })
 
-  it("silently drops an expired task without a final check", async () => {
+  it("expires a task without a final check and dispatches it to onResult as silent by default", async () => {
     const store = createPendingTaskStore({ storageKey: "engine-expired" })
     store.getState().addTask({
       id: "a",
@@ -102,6 +102,65 @@ describe("PendingTaskPoller", () => {
 
     expect(check).not.toHaveBeenCalled()
     expect(store.getState().tasks).toHaveLength(0)
+    expect(onResult).toHaveBeenCalledTimes(1)
+    expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ status: "expired", silent: true }))
+    poller.stop()
+  })
+
+  it("dispatches expired with silent: false when the handler sets silentOnExpiry: false", async () => {
+    const store = createPendingTaskStore({ storageKey: "engine-expired-loud" })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() - 1_000, ttlMs: 500 })
+
+    const onResult = vi.fn()
+    const poller = new PendingTaskPoller({
+      store,
+      registry: { demo: { check: vi.fn(), silentOnExpiry: false } },
+      onResult,
+    })
+    poller.forceCheckAll()
+    await flush()
+
+    expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ status: "expired", silent: false }))
+    poller.stop()
+  })
+
+  it("expires a finalCheckOnExpiry task whose one last check is still pending", async () => {
+    const store = createPendingTaskStore({ storageKey: "engine-final-check-pending" })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() - 1_000, ttlMs: 500 })
+
+    const check = vi.fn().mockResolvedValue({ status: "pending" })
+    const onResult = vi.fn()
+    const poller = new PendingTaskPoller({
+      store,
+      registry: { demo: { check, finalCheckOnExpiry: true } },
+      onResult,
+    })
+    poller.forceCheckAll()
+    await flush()
+
+    expect(check).toHaveBeenCalledTimes(1)
+    expect(store.getState().tasks).toHaveLength(0)
+    expect(onResult).toHaveBeenCalledTimes(1)
+    expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ status: "expired", silent: true }))
+    poller.stop()
+  })
+
+  it("leaves an expired task to the leader tab instead of expiring and dispatching it from every tab", async () => {
+    const storageKey = "engine-expired-non-leader"
+    const store = createPendingTaskStore({ storageKey })
+    store.getState().addTask({ id: "a", type: "demo", taskId: 1, startedAt: Date.now() - 1_000, ttlMs: 500 })
+
+    const pollLeaseKey = `${storageKey}-poll-leader`
+    // Another tab already holds the poll lease.
+    localStorage.setItem(pollLeaseKey, JSON.stringify({ ownerId: "other-tab", fence: 1, expiresAt: Date.now() + 10_000 }))
+
+    const onResult = vi.fn()
+    const poller = new PendingTaskPoller({ store, registry: { demo: { check: vi.fn() } }, onResult, pollLeaseKey })
+    poller.forceCheckAll()
+    await flush()
+
+    // Untouched here — the leader tab expires it (and relays the result to this one).
+    expect(store.getState().tasks).toHaveLength(1)
     expect(onResult).not.toHaveBeenCalled()
     poller.stop()
   })
@@ -242,7 +301,8 @@ describe("PendingTaskPoller", () => {
     await flush()
     expect(check).toHaveBeenCalledTimes(1)
     expect(store.getState().tasks).toHaveLength(0)
-    expect(onResult).not.toHaveBeenCalled()
+    expect(onResult).toHaveBeenCalledTimes(1)
+    expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ status: "expired" }))
 
     // A second forced tick must not re-run the already-consumed final check.
     poller.forceCheckAll()
@@ -261,11 +321,13 @@ describe("PendingTaskPoller", () => {
       ttlMs: 500,
     })
 
-    const poller = new PendingTaskPoller({ store, registry: {}, logger: { warn: vi.fn() } })
+    const onResult = vi.fn()
+    const poller = new PendingTaskPoller({ store, registry: {}, onResult, logger: { warn: vi.fn() } })
     poller.forceCheckAll()
     await flush()
 
     expect(store.getState().tasks).toHaveLength(0)
+    expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ status: "expired", silent: true }))
     poller.stop()
   })
 
@@ -360,7 +422,8 @@ describe("PendingTaskPoller", () => {
     await expect(surfaced).resolves.toMatchObject({ message: "bug in onCheckError" })
     expect(check).toHaveBeenCalledTimes(1)
     expect(store.getState().tasks).toHaveLength(0)
-    expect(onResult).not.toHaveBeenCalled()
+    expect(onResult).toHaveBeenCalledTimes(1)
+    expect(onResult).toHaveBeenCalledWith(expect.objectContaining({ status: "expired" }))
     poller.stop()
   })
 

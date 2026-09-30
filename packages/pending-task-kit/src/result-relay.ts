@@ -2,11 +2,6 @@ import { safeRemoveItem, safeSetItem } from "cross-tab-kit/advanced"
 import { isPendingTaskShape } from "./store"
 import type { PendingTaskResultEventDetail, PendingTaskResultStatus } from "./types"
 
-// "expired" is included for completeness against the full `PendingTaskResultStatus` union, but
-// the engine never actually relays it in practice — `finalize()` returns before ever reaching
-// the relay write for an "expired" outcome (expiry is silent by design, never dispatched to
-// `onResult`/DOM listeners either). Accepting it here just means this parser doesn't need to
-// track that engine-side detail to stay correct — it validates against the type's own shape.
 const RESULT_STATUSES: readonly PendingTaskResultStatus[] = ["success", "failure", "error", "expired"]
 
 function isResultStatus(value: unknown): value is PendingTaskResultStatus {

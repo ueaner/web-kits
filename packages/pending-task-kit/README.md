@@ -28,7 +28,7 @@ pnpm add pending-task-kit zustand
   your backend and returns `{ status: "pending" | "success" | "failure", progress?, data? }`
   — `data` is a free-form payload (a link, a message, whatever your `onResult` needs; see
   below), plus per-type tuning (`pollIntervalMs`, `ttlMs`, `finalCheckOnExpiry`,
-  `silentOnSuccess`/`silentOnFailure`, `retryBackoffMs` — see "Cancellation and retry
+  `silentOnSuccess`/`silentOnFailure`/`silentOnExpiry`, `retryBackoffMs` — see "Cancellation and retry
   backoff" below). `signal` is an `AbortSignal` you can ignore entirely (existing handlers
   that only take `task` keep working unmodified) or wire into your own request.
 - **Registry** (`PendingTaskRegistry`) — a plain `{ [type]: handler }` map.
@@ -36,12 +36,12 @@ pnpm add pending-task-kit zustand
   once (`console.warn`) if the tracked task count crosses `taskListWarnThreshold` (default 200) — the whole list is one JSON blob rewritten on every change, so a very large list
   risks the ~5MB per-origin quota.
 - **Poller** (`PendingTaskPoller`) — the engine: scans tasks on an interval, calls the
-  matching handler, and resolves each task to `success`/`failure` or `error` (`check()` itself
-  kept throwing until `maxFailureCount`) — always dispatched via `onResult`, with `detail.silent`
-  set from `silentOnSuccess`/`silentOnFailure` for `onResult` to act on itself (the engine
-  never withholds the call; see `onResult`'s own doc comment) — or silently to `expired` when
-  the TTL ran out first, which never reaches `onResult` at all. `error`/`expired` are the
-  engine's own doing, never something a handler returns itself.
+  matching handler, and resolves each task to `success`/`failure`, `error` (`check()` itself
+  kept throwing until `maxFailureCount`) or `expired` (the TTL ran out first) — always
+  dispatched via `onResult`, with `detail.silent` set from `silentOnSuccess`/`silentOnFailure`/
+  `silentOnExpiry` for `onResult` to act on itself (the engine never withholds the call; see
+  `onResult`'s own doc comment). `silentOnExpiry` defaults to `true`, the other two to `false`.
+  `error`/`expired` are the engine's own doing, never something a handler returns itself.
 
 ## Usage (core, no React)
 
@@ -91,12 +91,13 @@ const poller = new PendingTaskPoller({
   onResult: (detail) => {
     // Handlers marked silentOnSuccess/silentOnFailure still call this — detail.silent is how
     // you know. Skipping everything is one option; skipping only the toast is another.
+    // "expired" arrives with silent: true unless the handler sets silentOnExpiry: false.
     if (detail.silent) return
     const data = detail.data as { href?: string; message?: string } | undefined
     if (detail.status === "success") showToast(data?.message ?? "Done", { href: data?.href })
     if (detail.status === "failure") showToast(data?.message ?? "Failed", { variant: "error" })
     // detail.status can also be "error" (check() itself kept failing) — decide separately
-    // whether that deserves its own message; "expired" never reaches onResult at all.
+    // whether that deserves its own message.
   },
   onCheckError: (error) => {
     // Return true for an error that means "stop this tick, don't count it as a normal
@@ -336,9 +337,22 @@ they're documented somewhere instead of only in source comments:
   Safari 14.1+ / Firefox 69+). That changed in 0.6.0: the previous ES2020 target downlevelled
   them. If your browser baseline is older and your build doesn't downlevel dependencies from
   `node_modules`, handle it in your bundling step.
+- **`expired` is dispatched like any other outcome, but `silent` by default.** `expired` means
+  the TTL ran out without any definite answer ever arriving — the task may well have succeeded
+  server-side; the poller simply stopped tracking it. That's rarely worth a toast (the default
+  TTL is 24h — by then the user is usually long gone), so `silentOnExpiry` defaults to `true`,
+  but `onResult` (plus the result relay and DOM event) still gets the call, so cleanup that
+  depends on a task concluding — clearing a "processing" state, refreshing a list — runs for
+  expired tasks too. Set `silentOnExpiry: false` to have it arrive with `detail.silent: false`.
+  With `finalCheckOnExpiry: true` the handler gets one last `check()` first (on the first tick
+  after the TTL runs out that holds poll leadership): a definite `success`/`failure` from it is
+  dispatched as that outcome instead; a still-`pending` answer or a throw resolves to `expired`
+  (unless `onCheckError` intercepts the throw — then the task is left as-is and still gets its
+  final check once polling resumes). With cross-tab leader election on, only the leader tab
+  expires tasks, so an expiry is dispatched once and relayed like any other result.
 - **Wall-clock dependent** (`Date.now()` throughout). A clock stepping _backward_ just delays
   polling/lease-renewal/dedupe harmlessly. A clock jumping _forward_ can make a batch of tasks
-  expire silently all at once and make leases/dedupe records expire early — fencing (see
+  expire all at once and make leases/dedupe records expire early — fencing (see
   "Cross-tab poll-leader election") still keeps leadership _correct_ through that, just less
   available for a moment.
 - **Leadership rotates routinely, even in foreground tabs.** The lease's TTL defaults to 8s

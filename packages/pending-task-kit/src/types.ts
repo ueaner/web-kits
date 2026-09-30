@@ -92,16 +92,22 @@ export interface PendingTaskHandler<TType extends string = string> {
   retryBackoffMs?: (failureCount: number) => number
   /** How long (ms) an untracked-to-completion task is kept before being dropped. */
   ttlMs?: number
-  /** Force one last `check()` exactly at TTL expiry instead of silently dropping the task. */
+  /** Give the task one last `check()` once its TTL has run out (on the first tick after
+   *  expiry that holds leadership) before resolving it to `expired`; a definite answer from that
+   *  check wins instead. */
   finalCheckOnExpiry?: boolean
   /** Marks a `failure` or `error` outcome as `detail.silent` in the call to `onResult` —
    *  doesn't skip that call. `onResult` still always fires (claimResultOnce/relay/DOM event
    *  too); the engine has no notion of what "silent" should mean to your app (skip a toast but
-   *  still invalidate a cache? skip everything?), so it never decides that for you. `expired`
-   *  never reaches `onResult` at all regardless of this flag — see `PendingTaskResultStatus`. */
+   *  still invalidate a cache? skip everything?), so it never decides that for you. */
   silentOnFailure?: boolean
   /** Same as `silentOnFailure`, but for a `success` outcome. */
   silentOnSuccess?: boolean
+  /** Same as `silentOnFailure`, but for an `expired` outcome — and unlike the other two,
+   *  defaults to `true`: a timeout is usually noticed long after the fact, where a toast is
+   *  more noise than news, but `onResult` still gets the call for any cleanup. Set `false` to
+   *  have `expired` arrive with `detail.silent: false`. */
+  silentOnExpiry?: boolean
 }
 
 export type PendingTaskRegistry<TType extends string = string> = Partial<Record<TType, PendingTaskHandler<TType>>>
@@ -109,8 +115,8 @@ export type PendingTaskRegistry<TType extends string = string> = Partial<Record<
 export interface PendingTaskResultEventDetail<TType extends string = string> {
   task: PendingTask<TType>
   status: PendingTaskResultStatus
-  /** From the handler's `silentOnSuccess`/`silentOnFailure` for this outcome (`false` if
-   *  unset). Purely informational — the engine already called you regardless of this value;
+  /** From the handler's `silentOnSuccess`/`silentOnFailure`/`silentOnExpiry` for this outcome
+   *  (`false` if unset, except `silentOnExpiry`, which defaults to `true`). Purely informational — the engine already called you regardless of this value;
    *  it's on you to skip whatever "silent" should mean for this outcome (typically: don't show
    *  a toast, but still do other `onResult` work like a cache invalidation or a view switch). */
   silent: boolean
