@@ -305,6 +305,49 @@ describe("useDbQuery", () => {
     spy.mockRestore()
   })
 
+  it("queries once for a failure, and again when the error boundary retries", async () => {
+    const client = await createClient()
+    let fail = true
+    const run = vi.fn(async (db: DbClient) => {
+      if (fail) throw new Error("query failed")
+      return db.select<{ n: number }>("SELECT 7 AS n;")
+    })
+    function Flaky() {
+      return <p>{`n: ${useDbQuery(["flaky"], run)[0]?.n}`}</p>
+    }
+    let retry!: () => void
+    function Retryable() {
+      const [attempt, setAttempt] = useState(0)
+      retry = () => setAttempt((n) => n + 1)
+      return (
+        <Boundary key={attempt}>
+          <Suspense fallback={<p>loading</p>}>
+            <Flaky />
+          </Suspense>
+        </Boundary>
+      )
+    }
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {})
+    await mount(
+      <StrictMode>
+        <DatabaseProvider client={Promise.resolve(client)}>
+          <Retryable />
+        </DatabaseProvider>
+      </StrictMode>,
+    )
+    await flush()
+    expect(screen.getByText("error: query failed")).toBeTruthy()
+    // React 读到失败以后会再同步重试几次渲染：都读同一个失败的 promise，不会每次都重新查询
+    expect(run).toHaveBeenCalledTimes(1)
+
+    fail = false
+    await act(async () => retry())
+    await flush()
+    expect(screen.getByText("n: 7")).toBeTruthy()
+    expect(run).toHaveBeenCalledTimes(2)
+    spy.mockRestore()
+  })
+
   it("stops re-querying after unmount, and leaves no subscriptions behind (StrictMode)", async () => {
     const base = await createClient()
     let active = 0

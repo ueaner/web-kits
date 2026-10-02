@@ -237,8 +237,8 @@ Requires React 19 (it's built on `use`, Suspense and transitions).
   }
   ```
 
-- A failed query stays cached until the next write; change the key to retry
-  sooner.
+- A failed query throws to the nearest error boundary; when the boundary
+  retries (remounts), the query runs again.
 - There's deliberately no expiry, retry, pagination or background refetching.
   If you need those, use [TanStack Query](https://tanstack.com/query) and wire
   write notifications to its invalidation:
