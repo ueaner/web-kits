@@ -1,6 +1,6 @@
 import sqlite3InitModule from "@sqlite.org/sqlite-wasm"
 import type { Database, Sqlite3Static } from "@sqlite.org/sqlite-wasm"
-import type { BatchStatement, DbAdapter, DbClient, DbStorage } from "../core/types"
+import type { BatchStatement, DbAdapter, DbAdapterConfig, DbConnection, DbInitializeOptions, DbStorage } from "../core/types"
 import { DbCloseError, DbError, DbExecutionError, DbInitializationError } from "../core/errors"
 
 /**
@@ -15,7 +15,7 @@ export function createMemoryAdapter(): DbAdapter {
   let sqlite3: Sqlite3Static | null = null
   let db: Database | null = null
   // 缓存进行中的 initialize()，避免并发调用各自跑一遍完整初始化流程并互相覆盖状态
-  let initPromise: Promise<DbClient> | null = null
+  let initPromise: Promise<DbConnection> | null = null
 
   function requireDb(): Database {
     if (!db) {
@@ -24,7 +24,7 @@ export function createMemoryAdapter(): DbAdapter {
     return db
   }
 
-  const client: DbClient = {
+  const client: DbConnection = {
     get storage(): DbStorage {
       return db ? { persistent: false, reason: "memory-adapter" } : { persistent: false, reason: "not-initialized" }
     },
@@ -87,7 +87,7 @@ export function createMemoryAdapter(): DbAdapter {
     },
   }
 
-  async function doInitialize(): Promise<DbClient> {
+  async function doInitialize(): Promise<DbConnection> {
     try {
       sqlite3 = await sqlite3InitModule()
       db = new sqlite3.oo1.DB(":memory:", "c")
@@ -102,7 +102,9 @@ export function createMemoryAdapter(): DbAdapter {
   return {
     singleConnection: true,
 
-    initialize(): Promise<DbClient> {
+    initialize(_config?: DbAdapterConfig, options?: DbInitializeOptions): Promise<DbConnection> {
+      // 只在开始时检查一次取消信号：内存库的初始化很快，中途不需要取消
+      if (options?.signal?.aborted) return Promise.reject(new DbInitializationError(options.signal.reason))
       if (!initPromise) {
         initPromise = doInitialize()
         // 失败后允许重试；挂在缓存 promise 上而不是改写在它的 reject 路径里，

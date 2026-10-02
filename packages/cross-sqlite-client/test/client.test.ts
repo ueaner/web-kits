@@ -94,11 +94,13 @@ describe("initialize concurrency", () => {
     // 迁移只应执行一次：若并发初始化各自跑了一遍完整流程，第二条 INSERT INTO schema_version
     // 会因 version 主键冲突而抛错
     const adapter = createMemoryAdapter()
-    const [a, b] = await Promise.all([
+    const [client, connection] = await Promise.all([
       createDbClient({ name: "test", adapter, migrations: MIGRATIONS }),
-      adapter.initialize({ name: "test" }).then((client) => client),
+      adapter.initialize({ name: "test" }),
     ])
-    expect(a).toBe(b)
+    // createDbClient 返回的是包了写入通知的 client，底下是同一条连接：一边写入，另一边能读到
+    await client.execute("INSERT INTO items (label) VALUES ('a');")
+    expect(await connection.select<{ label: string }>("SELECT label FROM items;")).toEqual([{ label: "a" }])
   })
 })
 

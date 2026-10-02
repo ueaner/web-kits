@@ -12,6 +12,8 @@ const stubClient: DbClient = {
   execute: async () => ({}),
   executeBatch: async () => {},
   close: async () => {},
+  onWrite: () => () => {},
+  groupWrites: (fn) => fn(),
 }
 
 function createProbe() {

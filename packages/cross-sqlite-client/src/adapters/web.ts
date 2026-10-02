@@ -2,7 +2,7 @@ import type {
   BatchStatement,
   DbAdapter,
   DbAdapterConfig,
-  DbClient,
+  DbConnection,
   DbStorage,
   Logger,
   MemoryFallbackReason,
@@ -116,7 +116,7 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
   let worker: Worker | null = null
   // 缓存进行中的 initialize()，避免并发调用各自跑一遍完整初始化流程并互相覆盖状态。
   // config 以首次调用为准（后续调用直接返回同一个 client）。
-  let initPromise: Promise<DbClient> | null = null
+  let initPromise: Promise<DbConnection> | null = null
   // 当前连接的数据实际存在哪里：初始化成功时按最终打开的文件设置；还没初始化、close() 之后、初始化失败时
   // 都是 not-initialized（不会在什么都没打开时还报 persistent: true）
   const NOT_INITIALIZED: DbStorage = { persistent: false, reason: "not-initialized" }
@@ -149,7 +149,7 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
     }
   }
 
-  const client: DbClient = {
+  const client: DbConnection = {
     get storage() {
       return storage
     },
@@ -254,7 +254,7 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
     return openResponse.dbId
   }
 
-  async function doInitialize(config: DbAdapterConfig): Promise<DbClient> {
+  async function doInitialize(config: DbAdapterConfig): Promise<DbConnection> {
     const isOpfsSupported = typeof navigator !== "undefined" && typeof navigator.storage !== "undefined" && !!navigator.storage.getDirectory
     const isCrossOriginIsolated = typeof window !== "undefined" && window.crossOriginIsolated
 
@@ -371,7 +371,7 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
   return {
     singleConnection: true,
 
-    initialize(config: DbAdapterConfig): Promise<DbClient> {
+    initialize(config: DbAdapterConfig): Promise<DbConnection> {
       if (!initPromise) {
         initPromise = doInitialize(config)
         // 失败后允许重试；挂在缓存 promise 上而不是改写在它的 reject 路径里，

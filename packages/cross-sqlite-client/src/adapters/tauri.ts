@@ -1,5 +1,5 @@
 import Sqlite from "@tauri-apps/plugin-sql"
-import type { BatchStatement, DbAdapter, DbAdapterConfig, DbClient, DbStorage } from "../core/types"
+import type { BatchStatement, DbAdapter, DbAdapterConfig, DbConnection, DbInitializeOptions, DbStorage } from "../core/types"
 import { DbCloseError, DbError, DbExecutionError, DbInitializationError } from "../core/errors"
 
 /**
@@ -17,7 +17,7 @@ import { DbCloseError, DbError, DbExecutionError, DbInitializationError } from "
 export function createTauriAdapter(): DbAdapter {
   let db: Sqlite | null = null
   // 缓存进行中的 initialize()，避免并发调用各自跑一遍完整初始化流程并互相覆盖状态
-  let initPromise: Promise<DbClient> | null = null
+  let initPromise: Promise<DbConnection> | null = null
 
   function requireDb(): Sqlite {
     if (!db) {
@@ -26,7 +26,7 @@ export function createTauriAdapter(): DbAdapter {
     return db
   }
 
-  const client: DbClient = {
+  const client: DbConnection = {
     // tauri-plugin-sql 总是打开磁盘上的数据库文件；没有打开的连接时 not-initialized
     get storage(): DbStorage {
       return db ? { persistent: true } : { persistent: false, reason: "not-initialized" }
@@ -85,7 +85,7 @@ export function createTauriAdapter(): DbAdapter {
     },
   }
 
-  async function doInitialize(config: DbAdapterConfig): Promise<DbClient> {
+  async function doInitialize(config: DbAdapterConfig): Promise<DbConnection> {
     try {
       db = await Sqlite.load(`sqlite:${config.name}.db`)
       return client
@@ -97,7 +97,9 @@ export function createTauriAdapter(): DbAdapter {
   return {
     singleConnection: false,
 
-    initialize(config: DbAdapterConfig): Promise<DbClient> {
+    initialize(config: DbAdapterConfig, options?: DbInitializeOptions): Promise<DbConnection> {
+      // 只在开始时检查一次取消信号：Sqlite.load 不支持中途取消
+      if (options?.signal?.aborted) return Promise.reject(new DbInitializationError(options.signal.reason))
       if (!initPromise) {
         initPromise = doInitialize(config)
         // 失败后允许重试；调用方拿到的仍然是同一个会 reject 的 promise

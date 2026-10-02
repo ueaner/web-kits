@@ -1,10 +1,11 @@
 import { assertIdentifier, runMigrations } from "./migrate"
-import type { CreateDbClientOptions, DbClient } from "./types"
+import { observe } from "./observe"
+import type { CreateDbClientOptions, DbClient, DbConnection } from "./types"
 
 /** PRAGMA 的字符串值只允许枚举式 token（WAL、NORMAL……），杜绝拼 SQL 注入 */
 const PRAGMA_VALUE_RE = /^[A-Za-z0-9_]+$/
 
-async function applyPragmas(client: DbClient, pragmas: Record<string, string | number | boolean>): Promise<void> {
+async function applyPragmas(client: DbConnection, pragmas: Record<string, string | number | boolean>): Promise<void> {
   for (const [key, rawValue] of Object.entries(pragmas)) {
     assertIdentifier(key, "PRAGMA name")
     let value: string
@@ -39,7 +40,7 @@ export async function createDbClient(options: CreateDbClientOptions): Promise<Db
 
   const logger = options.logger ?? console
 
-  const client = await adapter.initialize({ name: options.name })
+  const client = await adapter.initialize({ name: options.name }, { signal: options.signal })
   try {
     if (options.pragmas) {
       // 连接级 PRAGMA（foreign_keys、busy_timeout 等）只作用于执行它的那一条物理连接；
@@ -65,12 +66,15 @@ export async function createDbClient(options: CreateDbClientOptions): Promise<Db
     await client.close().catch(() => {})
     throw error
   }
-  return client
+  // PRAGMA 和迁移都跑完以后才装写入通知，迁移不会触发通知
+  return observe(client, logger)
 }
 
 export { runMigrations, defaultExecutor } from "./migrate"
 export type {
   DbClient,
+  DbConnection,
+  DbInitializeOptions,
   DbAdapter,
   DbAdapterConfig,
   BatchStatement,

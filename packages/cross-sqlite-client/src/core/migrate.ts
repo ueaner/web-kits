@@ -1,5 +1,5 @@
 import { DbMigrationError } from "./errors"
-import type { DbClient, Logger, Migration, MigrationExecutor, MigrationOptions } from "./types"
+import type { DbConnection, Logger, Migration, MigrationExecutor, MigrationOptions } from "./types"
 
 /** 表名/PRAGMA 名等要拼进 SQL 的标识符，只允许这个白名单，杜绝注入 */
 const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -41,7 +41,7 @@ export const defaultExecutor: MigrationExecutor = async (db, migration, recordVe
  * 报出"迁移失败"的误导性错误。
  */
 export async function runMigrations(
-  db: Pick<DbClient, "execute" | "select" | "executeBatch">,
+  db: Pick<DbConnection, "execute" | "select" | "executeBatch">,
   migrations: Migration[],
   options?: MigrationOptions,
 ): Promise<void> {

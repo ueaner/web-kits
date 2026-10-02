@@ -40,7 +40,12 @@ export type DbStorage =
       reason: MemoryFallbackReason
     }
 
-export interface DbClient {
+/**
+ * 适配器 initialize() 返回的底层连接：执行 SQL，不发写入通知。
+ * 应用代码一般用 createDbClient() 返回的 DbClient；只需要读写 SQL 的地方（比如仓储层）
+ * 可以把参数类型写成 DbConnection，DbClient 也能传进去。
+ */
+export interface DbConnection {
   /**
    * 这个连接的数据实际存在哪里。web 适配器静默退回内存时，应用可以靠它提示用户"这次的数据不会保存"，
    * 而不是等用户刷新后才发现数据没了。initialize() 之前、close() 之后、initialize() 失败后为
@@ -61,9 +66,42 @@ export interface DbClient {
   close(): Promise<void>
 }
 
+/**
+ * createDbClient() 返回的 client：在 DbConnection 之上多了写入通知。
+ *
+ * 通知只说明"有写入"，不说明写了哪张表：sqlite-wasm 的 Worker1 接口和 Tauri 的 plugin-sql
+ * 都拿不到 SQLite 的 update_hook；连接池上 TEMP 触发器靠不住；从 SQL 里解析表名又会漏掉
+ * 触发器和外键级联写到的表。失效通知宁可多发、不能漏发，所以只给这一种信号。
+ */
+export interface DbClient extends DbConnection {
+  /**
+   * 每次 execute() / executeBatch() 结束后通知（成功和失败都通知：executeBatch 没有事务，
+   * 中途失败时前面的语句已经生效）。同一个任务里的多次写入合并成一次，在写入的 Promise
+   * 结束之后异步发出。select() 不通知——写语句（包括 INSERT … RETURNING）要走 execute()。
+   * listener 抛出的错误交给 logger，不影响写入，也不影响其他 listener。close() 之后不再通知。
+   * @returns 取消订阅的函数
+   */
+  onWrite(listener: () => void): () => void
+  /**
+   * fn 执行期间的写入先攒着，fn 结束（成功或抛错）后合并成一次通知；可以嵌套，最外层结束时才通知。
+   * 手写事务（execute("BEGIN") … execute("COMMIT")）必须放进来，否则监听方可能在提交之前
+   * 重新查询，读到还没提交的数据。它管的是通知，不是事务：同时进行的几个 groupWrites
+   * 会一起等到最后一个结束才通知。
+   */
+  groupWrites<T>(fn: () => Promise<T>): Promise<T>
+}
+
 export interface DbAdapterConfig {
   /** 数据库文件名/标识，如 "my-app"（不含扩展名） */
   name: string
+}
+
+export interface DbInitializeOptions {
+  /**
+   * 取消初始化。目前只有 web 适配器在 singleTabLock: "wait" 下排队等锁时会用到；
+   * 其他适配器只在开始时检查一次。并发调用共享第一次的初始化，后来调用传的 signal 被忽略
+   */
+  signal?: AbortSignal
 }
 
 export interface DbAdapter {
@@ -71,7 +109,7 @@ export interface DbAdapter {
    * 初始化并返回 client。并发或重复调用共享同一个进行中的初始化（去重），
    * config 以首次调用为准；close() 之后再调用会重开一个全新连接。
    */
-  initialize(config: DbAdapterConfig): Promise<DbClient>
+  initialize(config: DbAdapterConfig, options?: DbInitializeOptions): Promise<DbConnection>
   /**
    * 该适配器的每次 execute()/select() 调用是否保证落在同一条物理连接上。
    * web/memory 适配器是单一持久连接，为 true；Tauri 适配器底层是
@@ -96,7 +134,7 @@ export interface Migration {
  */
 export interface MigrationExecutor {
   (
-    db: Pick<DbClient, "execute" | "select" | "executeBatch">,
+    db: Pick<DbConnection, "execute" | "select" | "executeBatch">,
     migration: Migration,
     /** 记录 schema_version 的回调；executor 决定何时调用（比如放进自己的事务里） */
     recordVersion: () => Promise<void>,
@@ -128,4 +166,6 @@ export interface CreateDbClientOptions {
   pragmas?: Record<string, string | number | boolean>
   /** 诊断输出通道，默认 console；被 migrationOptions.logger 覆盖（迁移阶段） */
   logger?: Logger
+  /** 传给 adapter.initialize() 的取消信号，见 DbInitializeOptions */
+  signal?: AbortSignal
 }

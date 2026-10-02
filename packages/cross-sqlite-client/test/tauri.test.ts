@@ -111,3 +111,29 @@ describe("createTauriAdapter", () => {
     expect(db.execute).toHaveBeenNthCalledWith(2, "INSERT INTO a VALUES (?);", [1])
   })
 })
+
+describe("createTauriAdapter with createDbClient", () => {
+  it("notifies once for an executeBatch, although the adapter loops over execute() internally", async () => {
+    const db = fakeDb()
+    loadMock.mockResolvedValue(db)
+    const { createDbClient } = await import("../src/core/index")
+    const client = await createDbClient({ name: "my-app", adapter: createTauriAdapter() })
+    const listener = vi.fn()
+    client.onWrite(listener)
+
+    await client.executeBatch(["INSERT INTO t VALUES (1);", { sql: "INSERT INTO t VALUES (?);", params: [2] }])
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(db.execute).toHaveBeenCalledTimes(2)
+    expect(listener).toHaveBeenCalledTimes(1)
+  })
+
+  it("rejects before loading when the signal is already aborted", async () => {
+    loadMock.mockResolvedValue(fakeDb())
+    const controller = new AbortController()
+    controller.abort(new Error("cancelled"))
+    await expect(createTauriAdapter().initialize({ name: "my-app" }, { signal: controller.signal })).rejects.toBeInstanceOf(
+      DbInitializationError,
+    )
+    expect(loadMock).not.toHaveBeenCalled()
+  })
+})
