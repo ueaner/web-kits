@@ -1,5 +1,5 @@
 import Sqlite from "@tauri-apps/plugin-sql"
-import type { BatchStatement, DbAdapter, DbAdapterConfig, DbClient } from "../core/types"
+import type { BatchStatement, DbAdapter, DbAdapterConfig, DbClient, DbStorage } from "../core/types"
 import { DbCloseError, DbError, DbExecutionError, DbInitializationError } from "../core/errors"
 
 /**
@@ -28,7 +28,7 @@ export function createTauriAdapter(): DbAdapter {
 
   const client: DbClient = {
     // tauri-plugin-sql 总是打开磁盘上的数据库文件；没有打开的连接时 not-initialized
-    get storage() {
+    get storage(): DbStorage {
       return db ? { persistent: true } : { persistent: false, reason: "not-initialized" }
     },
 

@@ -1,6 +1,6 @@
 import sqlite3InitModule from "@sqlite.org/sqlite-wasm"
 import type { Database, Sqlite3Static } from "@sqlite.org/sqlite-wasm"
-import type { BatchStatement, DbAdapter, DbClient } from "../core/types"
+import type { BatchStatement, DbAdapter, DbClient, DbStorage } from "../core/types"
 import { DbCloseError, DbError, DbExecutionError, DbInitializationError } from "../core/errors"
 
 /**
@@ -25,7 +25,7 @@ export function createMemoryAdapter(): DbAdapter {
   }
 
   const client: DbClient = {
-    get storage() {
+    get storage(): DbStorage {
       return db ? { persistent: false, reason: "memory-adapter" } : { persistent: false, reason: "not-initialized" }
     },
 
