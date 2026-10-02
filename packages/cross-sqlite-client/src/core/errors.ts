@@ -52,7 +52,8 @@ export class DbCloseError extends DbError {
 
 /**
  * 另一个浏览器标签页/窗口已经持有同一个 OPFS 数据库文件的跨标签页锁。
- * 只有 web 适配器在 singleTabLock 启用时会抛出这个类型；调用方可以据此展示
+ * 只有 web 适配器在 singleTabLock 为 "fail" 或 "wait" 时会抛出这个类型（"wait" 下排队被取消也是它，
+ * 取消原因在 cause 里）；调用方可以据此展示
  * "请关闭其他标签页" 之类的提示，而不是把它当成普通的初始化失败处理。
  */
 export class DbTabLockError extends DbError {

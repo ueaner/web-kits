@@ -3,6 +3,7 @@ import type {
   DbAdapter,
   DbAdapterConfig,
   DbConnection,
+  DbInitializeOptions,
   DbStorage,
   Logger,
   MemoryFallbackReason,
@@ -30,14 +31,19 @@ export interface WebAdapterOptions {
    * Atomics.wait()），两个标签页同时写同一个 OPFS 文件不会挂死或数据损坏，冲突时会重试一段
    * 时间后返回 SQLITE_BUSY，作为一次普通的、可 catch 的 SQL 错误出现——但这个错误只会在业务
    * 代码真正执行到某条 SQL 语句时才暴露，且没有任何提示"这是因为别的标签页正在用这个库"。
-   * 启用 singleTabLock 后，initialize() 会在真正打开 OPFS 文件之前先尝试抢一个跨标签页命名
-   * 锁；抢不到（说明另一个标签页已经持有）会立即抛出 DbTabLockError，而不是让业务代码在某次
-   * 随机的查询里才踩到一个语义不明的 SQL 错误。
+   * 所以 initialize() 会在真正打开 OPFS 文件之前先抢一个跨标签页命名锁，而不是让业务代码在某次
+   * 随机的查询里才踩到一个语义不明的 SQL 错误：
+   * - "fail"（默认）：抢不到（另一个标签页已经持有）就立即抛 DbTabLockError；
+   * - "wait"：排队等另一个标签页放开。等多久由 initialize() / createDbClient() 的 signal 决定
+   *   （比如 AbortSignal.timeout(5000)），被取消或 close() 时抛 DbTabLockError，取消原因在 cause 里。
+   *   不传 signal 就一直等；
+   * - "off"：不协调，只依赖 sqlite-wasm 自己的重试和 SQLITE_BUSY。
    *
+   * 默认不是 "wait"：另一个标签页一直开着时，页面会一直停在加载、没有任何提示，比立即报错更难排查。
    * 只在真的走 OPFS 持久化时才会用到这把锁——:memory: 每个标签页互相独立，没有需要协调的资源，
    * 不受这个选项影响。
    */
-  singleTabLock?: boolean
+  singleTabLock?: "fail" | "wait" | "off"
   /** 诊断输出（OPFS 降级告警、worker 错误等），默认 console */
   logger?: Logger
 }
@@ -62,36 +68,51 @@ function promiserErrorCause(error: unknown): unknown {
   return isPromiserError(error) ? new Error(error.result.message) : error
 }
 
+export interface AcquireTabLockOptions {
+  /** true：排队等锁；false（默认）：拿不到就立即返回 null */
+  wait?: boolean
+  /** 只在 wait 为 true 时生效：取消排队。取消时抛出 signal.reason */
+  signal?: AbortSignal
+}
+
 /**
- * 用 Web Locks API 尝试（不等待）拿到一个跨标签页命名锁。拿不到（另一个标签页已持有）时
- * 返回 null；拿到时返回一个 release() 函数，调用方后续必须调用它来释放锁。
+ * 用 Web Locks API 拿一个跨标签页命名锁。拿到时返回 release() 函数，调用方后续必须调用它来释放锁；
+ * 不等待时拿不到（另一个标签页已持有）返回 null；等待时被取消抛出 signal.reason。
  *
  * 实现上依赖一个常见技巧：navigator.locks.request() 的回调函数返回什么 Promise，锁就持有到
  * 那个 Promise settle 为止；这里让回调返回一个我们自己创建、直到 release() 被调用才会 resolve
  * 的 Promise，从而把锁"长期持有"而不是只在回调执行期间持有。
  */
-export async function tryAcquireTabLock(lockName: string): Promise<(() => void) | null> {
+export async function acquireTabLock(lockName: string, { wait = false, signal }: AcquireTabLockOptions = {}): Promise<(() => void) | null> {
   if (typeof navigator === "undefined" || !navigator.locks) {
     // 不支持 Web Locks API 的环境（老浏览器、非浏览器测试环境）：跳过协调，行为等同于未启用
     return () => {}
   }
+  signal?.throwIfAborted()
 
   let release: (() => void) | undefined
-  const acquired = new Promise<boolean>((resolveAcquired) => {
-    void navigator.locks.request(lockName, { ifAvailable: true }, (lock) => {
-      if (!lock) {
-        resolveAcquired(false)
-        return
-      }
-      resolveAcquired(true)
-      return new Promise<void>((resolveRelease) => {
-        release = resolveRelease
+  const acquired = new Promise<boolean>((resolveAcquired, rejectAcquired) => {
+    // Web Locks 规定 signal 不能和 ifAvailable 一起用，所以只在排队等待时才传
+    const options: LockOptions = wait ? (signal ? { signal } : {}) : { ifAvailable: true }
+    navigator.locks
+      .request(lockName, options, (lock) => {
+        // 取消之后才轮到这把锁（或者根本没拿到）：直接返回，锁随即释放，不留下一把没人用的锁挡住别的标签页
+        if (!lock || signal?.aborted) {
+          resolveAcquired(false)
+          return
+        }
+        resolveAcquired(true)
+        return new Promise<void>((resolveRelease) => {
+          release = resolveRelease
+        })
       })
-    })
+      // 排队时被取消（AbortError）或者请求本身出错（SecurityError）
+      .catch(rejectAcquired)
   })
 
-  const gotLock = await acquired
-  if (!gotLock) {
+  if (!(await acquired)) {
+    // 等待中被取消、而锁恰好同时轮到：按取消处理
+    if (signal?.aborted) throw signal.reason
     return null
   }
   return () => release?.()
@@ -105,7 +126,7 @@ export async function tryAcquireTabLock(lockName: string): Promise<(() => void) 
 export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const fallbackToMemory = options.fallbackToMemory ?? true
-  const singleTabLock = options.singleTabLock ?? true
+  const singleTabLock = options.singleTabLock ?? "fail"
   const logger: Logger = options.logger ?? console
 
   let promiser: Promiser | null = null
@@ -117,6 +138,8 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
   // 缓存进行中的 initialize()，避免并发调用各自跑一遍完整初始化流程并互相覆盖状态。
   // config 以首次调用为准（后续调用直接返回同一个 client）。
   let initPromise: Promise<DbConnection> | null = null
+  // 进行中的初始化的取消开关：close() 用它取消排队等锁
+  let initAbort: AbortController | null = null
   // 当前连接的数据实际存在哪里：初始化成功时按最终打开的文件设置；还没初始化、close() 之后、初始化失败时
   // 都是 not-initialized（不会在什么都没打开时还报 persistent: true）
   const NOT_INITIALIZED: DbStorage = { persistent: false, reason: "not-initialized" }
@@ -200,6 +223,9 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
       // 初始化在 close 之后悄悄完成、留下一个没人持有句柄的连接和标签页锁
       const pending = initPromise
       initPromise = null
+      // 还在排队等锁的话，先取消，不然 close() 要一直等到另一个标签页放开
+      initAbort?.abort(new DbError("[Web DB] The client was closed while initializing."))
+      initAbort = null
       if (pending) {
         await pending.catch(() => {})
       }
@@ -254,7 +280,8 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
     return openResponse.dbId
   }
 
-  async function doInitialize(config: DbAdapterConfig): Promise<DbConnection> {
+  async function doInitialize(config: DbAdapterConfig, signal: AbortSignal): Promise<DbConnection> {
+    if (signal.aborted) throw new DbInitializationError(signal.reason)
     const isOpfsSupported = typeof navigator !== "undefined" && typeof navigator.storage !== "undefined" && !!navigator.storage.getDirectory
     const isCrossOriginIsolated = typeof window !== "undefined" && window.crossOriginIsolated
 
@@ -292,11 +319,13 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
     // 注意 DbTabLockError 必须原样抛出（不能包成 DbInitializationError），调用方靠它区分
     // "别的标签页在用"和"初始化失败"；但获取锁这个动作本身的异常（如 SecurityError）要统一
     // 包成 DbInitializationError。
-    if (filename !== ":memory:" && singleTabLock) {
+    if (filename !== ":memory:" && singleTabLock !== "off") {
       let release: (() => void) | null
       try {
-        release = await tryAcquireTabLock(`cross-sqlite-client:${config.name}`)
+        release = await acquireTabLock(`cross-sqlite-client:${config.name}`, { wait: singleTabLock === "wait", signal })
       } catch (error) {
+        // 排队等锁时被调用方的 signal 或 close() 取消：仍然是"拿不到这个标签页的数据库"
+        if (signal.aborted) throw new DbTabLockError(signal.reason)
         throw new DbInitializationError(error)
       }
       if (!release) {
@@ -371,9 +400,12 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
   return {
     singleConnection: true,
 
-    initialize(config: DbAdapterConfig): Promise<DbConnection> {
+    // 并发调用共享第一次的初始化：config 和 signal 都以第一次为准
+    initialize(config: DbAdapterConfig, options?: DbInitializeOptions): Promise<DbConnection> {
       if (!initPromise) {
-        initPromise = doInitialize(config)
+        initAbort = new AbortController()
+        const signal = options?.signal ? AbortSignal.any([options.signal, initAbort.signal]) : initAbort.signal
+        initPromise = doInitialize(config, signal)
         // 失败后允许重试；挂在缓存 promise 上而不是改写在它的 reject 路径里，
         // 调用方拿到的仍然是同一个会 reject 的 promise
         initPromise.catch(() => {

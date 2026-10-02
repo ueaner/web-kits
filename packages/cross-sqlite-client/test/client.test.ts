@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { createDbClient } from "../src/core/index"
 import { createMemoryAdapter } from "../src/adapters/memory"
-import { DbError } from "../src/core/errors"
+import { DbError, DbInitializationError } from "../src/core/errors"
 
 const MIGRATIONS = [{ version: 1, statements: ["CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT NOT NULL);"] }]
 
@@ -141,5 +141,15 @@ describe("client lifecycle", () => {
     const reopened = await adapter.initialize({ name: "test" })
     // close() 会清掉缓存的初始化 Promise，重开得到的是全新可用连接而不是死 client
     expect(await reopened.select<{ n: number }>("SELECT 1 AS n;")).toEqual([{ n: 1 }])
+  })
+})
+
+describe("signal", () => {
+  it("passes createDbClient's signal to the adapter: an aborted one stops initialization", async () => {
+    const controller = new AbortController()
+    controller.abort(new Error("cancelled"))
+    const error = await createDbClient({ name: "test", adapter: createMemoryAdapter(), signal: controller.signal }).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(DbInitializationError)
+    expect((error as DbInitializationError).cause).toBe(controller.signal.reason)
   })
 })
