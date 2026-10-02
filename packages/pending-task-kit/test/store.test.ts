@@ -292,10 +292,10 @@ describe("createPendingTaskStore", () => {
     it("surfaces a throwing listener without aborting the write or starving the listeners after it", async () => {
       const store = createPendingTaskStore({ storageKey: "test-tasks-subscribe-throwing" })
       const second = vi.fn()
-      store.subscribe(() => {
+      const unsubscribeThrowing = store.subscribe(() => {
         throw new Error("bug in listener")
       })
-      store.subscribe(second)
+      const unsubscribeSecond = store.subscribe(second)
 
       const surfaced = new Promise<unknown>((resolve) => {
         process.once("uncaughtException", resolve)
@@ -306,6 +306,10 @@ describe("createPendingTaskStore", () => {
       expect(readPersistedTasks("test-tasks-subscribe-throwing")).toHaveLength(1)
       expect(second).toHaveBeenCalledTimes(1)
       await expect(surfaced).resolves.toMatchObject({ message: "bug in listener" })
+      // the last unsubscribe also drops the window "storage" listener: otherwise a later test's storage event
+      // (another tab clearing localStorage) reaches this store and the throwing listener throws again, uncaught
+      unsubscribeThrowing()
+      unsubscribeSecond()
     })
 
     it("lets a re-entrant write win, so no listener ends on a stale snapshot", () => {
