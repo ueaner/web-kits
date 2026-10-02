@@ -27,8 +27,10 @@ export function createTauriAdapter(): DbAdapter {
   }
 
   const client: DbClient = {
-    // tauri-plugin-sql 总是打开磁盘上的数据库文件
-    storage: { persistent: true },
+    // tauri-plugin-sql 总是打开磁盘上的数据库文件；没有打开的连接时 not-initialized
+    get storage() {
+      return db ? { persistent: true } : { persistent: false, reason: "not-initialized" }
+    },
 
     async select<T>(sql: string, params: unknown[] = []): Promise<T[]> {
       const d = requireDb()

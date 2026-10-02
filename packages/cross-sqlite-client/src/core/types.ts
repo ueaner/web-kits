@@ -11,15 +11,22 @@ export interface Logger {
 export type BatchStatement = string | { sql: string; params?: unknown[] }
 
 /**
- * 数据为什么只在内存里（DbStorage.persistent 为 false 时）：
- * - "memory-adapter"：用的就是内存适配器（测试），本来就不持久化；
+ * 数据为什么不持久化（DbStorage.persistent 为 false 时）：
+ * - "not-initialized"：还没有打开的连接（initialize() 之前、close() 之后、initialize() 失败后）；
+ * - "memory-adapter"：用的就是内存适配器（测试），本来就不持久化。只有内存适配器会给出，web 适配器不会；
  * - "opfs-unsupported"：浏览器不支持 OPFS（navigator.storage.getDirectory 不存在）；
  * - "not-cross-origin-isolated"：页面没有跨源隔离（缺 COOP/COEP 响应头，常见于代理或托管方去掉了它们），
  *   sqlite-wasm 的 opfs VFS 用不了；
  * - "opfs-unavailable"：OPFS 探测失败（私有模式、配额、权限）；
  * - "open-failed"：探测通过，但 opfs VFS 打开数据库文件失败。
  */
-export type MemoryFallbackReason = "memory-adapter" | "opfs-unsupported" | "not-cross-origin-isolated" | "opfs-unavailable" | "open-failed"
+export type MemoryFallbackReason =
+  | "not-initialized"
+  | "memory-adapter"
+  | "opfs-unsupported"
+  | "not-cross-origin-isolated"
+  | "opfs-unavailable"
+  | "open-failed"
 
 /** 数据实际存在哪里。web 适配器在 OPFS 不可用、并且 fallbackToMemory 为 true 时会退回内存 */
 export type DbStorage =
@@ -35,9 +42,9 @@ export type DbStorage =
 
 export interface DbClient {
   /**
-   * 这个连接的数据实际存在哪里（initialize() 完成后才有意义）。web 适配器静默退回内存时，
-   * 应用可以靠它提示用户"这次的数据不会保存"，而不是等用户刷新后才发现数据没了。
-   * 同一个 client 关闭后重新 initialize()，值按新连接更新。
+   * 这个连接的数据实际存在哪里。web 适配器静默退回内存时，应用可以靠它提示用户"这次的数据不会保存"，
+   * 而不是等用户刷新后才发现数据没了。initialize() 之前、close() 之后、initialize() 失败后为
+   * { persistent: false, reason: "not-initialized" }；同一个 client 关闭后重新 initialize()，值按新连接更新。
    */
   readonly storage: DbStorage
   select<T>(sql: string, params?: unknown[]): Promise<T[]>

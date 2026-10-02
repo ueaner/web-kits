@@ -324,7 +324,9 @@ if (!client.storage.persistent) {
 
 `client.storage` is `{ persistent: true }` on an OPFS file and on Tauri, and
 `{ persistent: false, reason }` on the in-memory fallback (and on the memory
-adapter, with `reason: "memory-adapter"`).
+adapter, with `reason: "memory-adapter"`). With no open connection (before
+`initialize()`, after `close()`, after a failed `initialize()`) it is
+`{ persistent: false, reason: "not-initialized" }`.
 
 Note this is a _deployment_ constraint, not a browser-version one: even on a
 fully modern browser, you can lose cross-origin isolation by being embedded in

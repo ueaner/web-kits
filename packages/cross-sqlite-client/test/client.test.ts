@@ -13,6 +13,8 @@ describe("storage", () => {
   it("is never persistent on the memory adapter", async () => {
     const client = await createClient()
     expect(client.storage).toEqual({ persistent: false, reason: "memory-adapter" })
+    await client.close()
+    expect(client.storage).toEqual({ persistent: false, reason: "not-initialized" })
   })
 })
 

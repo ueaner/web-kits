@@ -236,7 +236,7 @@ if (!client.storage.persistent) {
 }
 ```
 
-`client.storage` 在 OPFS 文件和 Tauri 上是 `{ persistent: true }`，退回内存时是 `{ persistent: false, reason }`（内存适配器是 `reason: "memory-adapter"`）。
+`client.storage` 在 OPFS 文件和 Tauri 上是 `{ persistent: true }`，退回内存时是 `{ persistent: false, reason }`（内存适配器是 `reason: "memory-adapter"`）。没有打开的连接时（`initialize()` 之前、`close()` 之后、`initialize()` 失败后）是 `{ persistent: false, reason: "not-initialized" }`。
 
 注意这是**部署/托管层面的约束**，不是浏览器版本问题：即使在很新的浏览器上，也可能因为嵌在别人的 iframe 里、托管平台不允许自定义响应头、或者团队故意不启用 `COEP: require-corp`（以免阻塞页面上的其他第三方脚本）而失去跨源隔离。目前只在「完整 OPFS 持久化」和「完全没有持久化（`:memory:`）」之间二选一——例如 sqlite-wasm 还提供了基于 `localStorage`/`sessionStorage` 的 `kvvfs` 后端，可作为中间层，但当前版本尚未接入；见[已知限制](#已知限制)。
 

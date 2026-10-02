@@ -37,8 +37,11 @@ describe("createTauriAdapter", () => {
   })
 
   it("reports persistent storage (a database file on disk)", async () => {
+    loadMock.mockResolvedValue(fakeDb())
     const client = await createTauriAdapter().initialize({ name: "my-app" })
     expect(client.storage).toEqual({ persistent: true })
+    await client.close()
+    expect(client.storage).toEqual({ persistent: false, reason: "not-initialized" })
   })
 
   it("reports singleConnection: false (pooled driver)", () => {

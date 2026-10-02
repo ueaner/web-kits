@@ -117,8 +117,10 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
   // 缓存进行中的 initialize()，避免并发调用各自跑一遍完整初始化流程并互相覆盖状态。
   // config 以首次调用为准（后续调用直接返回同一个 client）。
   let initPromise: Promise<DbClient> | null = null
-  // 当前连接的数据实际存在哪里；每次 doInitialize 按最终打开的文件更新
-  let storage: DbStorage = { persistent: false, reason: "opfs-unavailable" }
+  // 当前连接的数据实际存在哪里：初始化成功时按最终打开的文件设置；还没初始化、close() 之后、初始化失败时
+  // 都是 not-initialized（不会在什么都没打开时还报 persistent: true）
+  const NOT_INITIALIZED: DbStorage = { persistent: false, reason: "not-initialized" }
+  let storage: DbStorage = NOT_INITIALIZED
 
   function requirePromiser(): { p: Promiser; dbId: DbId } {
     if (!promiser || currentDbId === undefined) {
@@ -210,6 +212,7 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
       promiser = null
       currentDbId = undefined
       worker = null
+      storage = NOT_INITIALIZED
       releaseTabLock?.()
       releaseTabLock = null
 
@@ -340,6 +343,9 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
           currentDbId = await openDatabase(promiser, ":memory:")
           filename = ":memory:"
           fallback = "open-failed"
+          // :memory: 不需要跨标签页协调：放掉为 OPFS 文件拿的锁，不然这个标签页会一直挡着别的标签页打开 OPFS
+          releaseTabLock?.()
+          releaseTabLock = null
         } else {
           throw openError
         }
@@ -350,6 +356,7 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
     } catch (error) {
       promiser = null
       currentDbId = undefined
+      storage = NOT_INITIALIZED
       worker?.terminate()
       worker = null
       releaseTabLock?.()

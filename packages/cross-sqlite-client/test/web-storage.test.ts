@@ -70,6 +70,45 @@ describe("web adapter: client.storage", () => {
     expect(client.storage).toEqual({ persistent: true })
   })
 
+  it("is not-initialized before initialize, after close and after a failed initialize, never a stale value", async () => {
+    browser()
+    const adapter = createWebAdapter({ singleTabLock: false, logger: silent })
+    const client = await adapter.initialize({ name: "app" })
+    expect(client.storage).toEqual({ persistent: true })
+    await client.close()
+    expect(client.storage).toEqual({ persistent: false, reason: "not-initialized" })
+    browser({ isolated: false })
+    await expect(
+      createWebAdapter({ singleTabLock: false, fallbackToMemory: false, logger: silent }).initialize({ name: "app" }),
+    ).rejects.toThrow()
+    // the same client, re-initialized and failing this time
+    const strict = createWebAdapter({ singleTabLock: false, fallbackToMemory: false, logger: silent })
+    browser()
+    const opened = await strict.initialize({ name: "app" })
+    await opened.close()
+    browser({ isolated: false })
+    await expect(strict.initialize({ name: "app" })).rejects.toThrow()
+    expect(opened.storage).toEqual({ persistent: false, reason: "not-initialized" })
+  })
+
+  it("lets go of the tab lock when it falls back to memory after the OPFS file failed to open", async () => {
+    browser()
+    // a minimal Web Locks: a lock is held until the promise its callback returns settles
+    const held = new Set<string>()
+    const locks = {
+      request: (name: string, _options: unknown, callback: (lock: { name: string } | null) => unknown) => {
+        if (held.has(name)) return Promise.resolve(callback(null))
+        held.add(name)
+        return Promise.resolve(callback({ name })).finally(() => held.delete(name))
+      },
+    }
+    vi.stubGlobal("navigator", { ...navigator, locks })
+    failOpfsOpen = true
+    const client = await createWebAdapter({ logger: silent }).initialize({ name: "app" })
+    expect(client.storage).toEqual({ persistent: false, reason: "open-failed" })
+    await vi.waitFor(() => expect(held.size).toBe(0))
+  })
+
   it("throws instead of falling back when fallbackToMemory is false", async () => {
     browser({ isolated: false })
     const error = await createWebAdapter({ singleTabLock: false, fallbackToMemory: false, logger: silent })
