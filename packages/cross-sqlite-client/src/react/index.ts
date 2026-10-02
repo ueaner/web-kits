@@ -1,3 +1,3 @@
-export { DatabaseProvider } from "./DatabaseProvider"
-export type { DatabaseContextType, DatabaseProviderProps } from "./DatabaseProvider"
-export { useDatabase } from "./useDatabase"
+export { DatabaseProvider, useDbClient } from "./DatabaseProvider"
+export type { DatabaseProviderProps } from "./DatabaseProvider"
+export { useDbQuery } from "./useDbQuery"
