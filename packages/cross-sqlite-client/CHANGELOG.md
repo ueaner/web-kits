@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.4.0
+
+### Minor Changes
+
+- dcec31c: The React binding is rebuilt on React 19's `use`, Suspense and transitions, and gains a query hook.
+
+  - `useDbClient()` returns the client. Until it's ready the component suspends (the nearest `<Suspense>` shows its fallback); if initialization fails the error — `DbTabLockError` included — is thrown to the nearest error boundary.
+  - `useDbQuery(key, run)` returns `run(client)`'s result, suspending until it's in and throwing a failed query to the error boundary. Results are cached per client by `key` (JSON-serializable, and it must include every variable `run` uses), so components that share a key share one query. Every write clears the cache and re-queries inside `startTransition`: the old data stays on screen until the new result is in, and back-to-back writes only ever show the last result. A key change is your own update and suspends; wrap the `setState` that changes the key in `startTransition` to keep the old data meanwhile (paging). A failed query is queried once (React's own re-renders after the rejection all read the same promise) and runs again when the error boundary retries. There is deliberately no expiry, retry or pagination: use TanStack Query, with `client.onWrite` wired to `invalidateQueries`, if you need those.
+
+  **Breaking:**
+
+  - `useDatabase()` and `DatabaseContextType` are removed; use `useDbClient()` under `<Suspense>` and an error boundary instead of `{ dbClient, isDbReady, isLoading, dbError }`.
+  - `<DatabaseProvider client>` takes only a `Promise<DbClient>` (`Promise.resolve(client)` for one that's ready). To retry, pass a new promise and change the `key` of the error boundary around it.
+  - The `react` peer dependency is now `>=19.0.0`.
+
+- 377d5f3: The web adapter can queue for the tab lock instead of failing: `singleTabLock: "wait"` waits for the tab that holds the database to let go, for as long as the `signal` passed to `createDbClient({ signal })` / `adapter.initialize(config, { signal })` allows (`AbortSignal.timeout(5000)`, say; no signal waits indefinitely). A cancelled wait — by that signal or by `close()` — rejects with `DbTabLockError`, the cancellation reason in `cause`; a lock that happens to be granted at the moment of cancellation is released at once instead of being left held. `close()` during a wait no longer waits for the other tab.
+
+  **Breaking:**
+
+  - `singleTabLock` takes `"fail" | "wait" | "off"` instead of a boolean. `"fail"` (the default) is the old `true`: `DbTabLockError` right away when another tab holds the lock; `"off"` is the old `false`.
+  - `tryAcquireTabLock(name)` is now `acquireTabLock(name, { wait, signal })`. Without options it behaves as before (`null` when the lock is held); with `wait: true` it queues and, when `signal` aborts, throws `signal.reason`.
+
+- 80cf47b: `createDbClient()` now returns a client that tells you when the database was written to: `client.onWrite(listener)` (returns an unsubscribe function) fires after every `execute()` / `executeBatch()` — on failure too, since `executeBatch` has no transaction and earlier statements may already be applied. Writes started in the same task are merged into one notification, delivered asynchronously after the write's promise settles; `select()` never notifies (route writes, including `INSERT … RETURNING`, through `execute()`); migrations run before the notifications are installed; a throwing listener goes to `logger` and doesn't affect the write or the other listeners; nothing fires after `close()`. The signal is only "something was written", not which table: neither sqlite-wasm's Worker1 API nor Tauri's `plugin-sql` exposes SQLite's `update_hook`, TEMP triggers don't hold on a connection pool, and parsing table names out of SQL misses trigger and cascade writes — and an invalidation signal must never be missed.
+
+  `client.groupWrites(fn)` holds the notifications for writes made while `fn` runs and fires once when it settles (nested groups fire when the outermost one ends). Put hand-written transactions (`execute("BEGIN")` … `execute("COMMIT")`) inside it, otherwise a listener may re-query before the commit and read uncommitted data.
+
+  **Breaking:** what adapters return from `initialize()` is now `DbConnection` (the old `DbClient` interface, unchanged). `DbClient` is now `DbConnection` plus `onWrite` / `groupWrites`, and only `createDbClient()` produces one. Code that called `adapter.initialize()` directly (tests, typically) gets a `DbConnection`: it still runs SQL, but doesn't notify — use `createDbClient({ name, adapter: createMemoryAdapter(), migrations })` where you need a `DbClient`. Custom adapters return `DbConnection` and keep implementing the same five members. `runMigrations` and `MigrationExecutor` take `Pick<DbConnection, …>` (same members as before).
+
+  `adapter.initialize(config, { signal })` and `createDbClient({ signal })` accept an `AbortSignal`. The memory and Tauri adapters only check it before starting.
+
 ## 0.3.0
 
 ### Minor Changes
