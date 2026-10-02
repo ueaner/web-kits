@@ -311,7 +311,20 @@ Cross-Origin-Embedder-Policy: require-corp
 Without these headers, the adapter doesn't error — it silently falls back to
 an in-memory database (`fallbackToMemory: true` by default), so data won't
 survive a page reload. Pass `fallbackToMemory: false` if you'd rather fail
-loudly than run in-memory unexpectedly.
+loudly than run in-memory unexpectedly, or keep the fallback and check
+`client.storage` to tell the user their data won't be kept:
+
+```ts
+const client = await createDbClient({ name: "my-app", adapter: createWebAdapter(), migrations })
+if (!client.storage.persistent) {
+  // "not-cross-origin-isolated" | "opfs-unsupported" | "opfs-unavailable" | "open-failed"
+  showBanner(`Your progress won't be saved (${client.storage.reason})`)
+}
+```
+
+`client.storage` is `{ persistent: true }` on an OPFS file and on Tauri, and
+`{ persistent: false, reason }` on the in-memory fallback (and on the memory
+adapter, with `reason: "memory-adapter"`).
 
 Note this is a _deployment_ constraint, not a browser-version one: even on a
 fully modern browser, you can lose cross-origin isolation by being embedded in
@@ -430,8 +443,8 @@ Deployment/runtime behaviors that are deliberate tradeoffs rather than bugs:
   (`SQLITE_BUSY`) errors from sqlite-wasm itself.
 - **The in-memory fallback loses data on reload.** When OPFS is unavailable
   and `fallbackToMemory` is on, everything works but nothing persists. The
-  adapter emits a `logger.warn` when this happens — pass your own `logger` if
-  the app needs to detect it and warn the user.
+  adapter emits a `logger.warn` when this happens, and `client.storage` says
+  so (`persistent: false` with the reason) — check it to warn the user.
 
 ## Versioning
 

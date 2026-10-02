@@ -226,7 +226,17 @@ Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp
 ```
 
-没有这些头时，适配器不会报错，而是静默回退到内存数据库（`fallbackToMemory: true` 为默认），因此页面刷新后数据会丢失。如果你宁可失败也不愿在不知情的情况下跑内存模式，可传 `fallbackToMemory: false`。
+没有这些头时，适配器不会报错，而是静默回退到内存数据库（`fallbackToMemory: true` 为默认），因此页面刷新后数据会丢失。如果你宁可失败也不愿在不知情的情况下跑内存模式，可传 `fallbackToMemory: false`；也可以保留回退，检查 `client.storage` 提示用户"这次的数据不会保存"：
+
+```ts
+const client = await createDbClient({ name: "my-app", adapter: createWebAdapter(), migrations })
+if (!client.storage.persistent) {
+  // "not-cross-origin-isolated" | "opfs-unsupported" | "opfs-unavailable" | "open-failed"
+  showBanner(`这次的进度不会保存（${client.storage.reason}）`)
+}
+```
+
+`client.storage` 在 OPFS 文件和 Tauri 上是 `{ persistent: true }`，退回内存时是 `{ persistent: false, reason }`（内存适配器是 `reason: "memory-adapter"`）。
 
 注意这是**部署/托管层面的约束**，不是浏览器版本问题：即使在很新的浏览器上，也可能因为嵌在别人的 iframe 里、托管平台不允许自定义响应头、或者团队故意不启用 `COEP: require-corp`（以免阻塞页面上的其他第三方脚本）而失去跨源隔离。目前只在「完整 OPFS 持久化」和「完全没有持久化（`:memory:`）」之间二选一——例如 sqlite-wasm 还提供了基于 `localStorage`/`sessionStorage` 的 `kvvfs` 后端，可作为中间层，但当前版本尚未接入；见[已知限制](#已知限制)。
 
@@ -291,7 +301,7 @@ await runMigrations(client, APP_MIGRATIONS)
 
 - **bfcache 冻结的标签页会一直持有数据库锁。** `singleTabLock` 基于 Web Locks API；被浏览器前进/后退缓存（bfcache）冻结（而非关闭）的标签页会持续持有锁，其他标签页会一直收到 `DbTabLockError`，直到被冻结的标签页被丢弃。真正关闭或崩溃的标签页，其锁会由浏览器自动释放。
 - **没有 Web Locks API → 没有跨标签页协调。** 在老旧浏览器或非安全（非 HTTPS）上下文中，`singleTabLock` 会静默退化为不做协调：多个标签页可以同时打开同一个 OPFS 文件，竞争会在此后以 sqlite-wasm 抛出的可捕获的 "database is locked"（`SQLITE_BUSY`）错误形式暴露。
-- **内存降级模式下刷新页面会丢数据。** OPFS 不可用且 `fallbackToMemory` 开启时，一切功能正常但不持久化。发生降级时适配器会发出 `logger.warn`——如果应用需要感知并向用户提示，请传入自己的 `logger`。
+- **内存降级模式下刷新页面会丢数据。** OPFS 不可用且 `fallbackToMemory` 开启时，一切功能正常但不持久化。发生降级时适配器会发出 `logger.warn`，`client.storage` 也会是 `persistent: false` 并给出原因——应用需要向用户提示时检查它即可。
 
 ## 版本策略
 

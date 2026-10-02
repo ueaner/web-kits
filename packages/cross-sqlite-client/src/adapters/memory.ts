@@ -25,6 +25,8 @@ export function createMemoryAdapter(): DbAdapter {
   }
 
   const client: DbClient = {
+    storage: { persistent: false, reason: "memory-adapter" },
+
     async select<T>(sql: string, params: unknown[] = []): Promise<T[]> {
       const d = requireDb()
       try {

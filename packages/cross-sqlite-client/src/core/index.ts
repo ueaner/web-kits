@@ -79,5 +79,7 @@ export type {
   MigrationExecutor,
   MigrationOptions,
   CreateDbClientOptions,
+  DbStorage,
+  MemoryFallbackReason,
 } from "./types"
 export { DbError, DbInitializationError, DbExecutionError, DbMigrationError, DbCloseError, DbTabLockError } from "./errors"

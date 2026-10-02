@@ -36,6 +36,11 @@ describe("createTauriAdapter", () => {
     expect(db.execute).toHaveBeenCalledWith("INSERT INTO t VALUES (?);", ["x"])
   })
 
+  it("reports persistent storage (a database file on disk)", async () => {
+    const client = await createTauriAdapter().initialize({ name: "my-app" })
+    expect(client.storage).toEqual({ persistent: true })
+  })
+
   it("reports singleConnection: false (pooled driver)", () => {
     expect(createTauriAdapter().singleConnection).toBe(false)
   })

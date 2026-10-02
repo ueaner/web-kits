@@ -10,7 +10,36 @@ export interface Logger {
 /** executeBatch 的一条语句：纯 SQL 字符串，或带绑定参数的对象形式 */
 export type BatchStatement = string | { sql: string; params?: unknown[] }
 
+/**
+ * 数据为什么只在内存里（DbStorage.persistent 为 false 时）：
+ * - "memory-adapter"：用的就是内存适配器（测试），本来就不持久化；
+ * - "opfs-unsupported"：浏览器不支持 OPFS（navigator.storage.getDirectory 不存在）；
+ * - "not-cross-origin-isolated"：页面没有跨源隔离（缺 COOP/COEP 响应头，常见于代理或托管方去掉了它们），
+ *   sqlite-wasm 的 opfs VFS 用不了；
+ * - "opfs-unavailable"：OPFS 探测失败（私有模式、配额、权限）；
+ * - "open-failed"：探测通过，但 opfs VFS 打开数据库文件失败。
+ */
+export type MemoryFallbackReason = "memory-adapter" | "opfs-unsupported" | "not-cross-origin-isolated" | "opfs-unavailable" | "open-failed"
+
+/** 数据实际存在哪里。web 适配器在 OPFS 不可用、并且 fallbackToMemory 为 true 时会退回内存 */
+export type DbStorage =
+  | {
+      /** 持久化：关掉页面、刷新、重启应用后数据还在 */
+      persistent: true
+    }
+  | {
+      /** 只在内存里：关掉页面或刷新后数据就没了 */
+      persistent: false
+      reason: MemoryFallbackReason
+    }
+
 export interface DbClient {
+  /**
+   * 这个连接的数据实际存在哪里（initialize() 完成后才有意义）。web 适配器静默退回内存时，
+   * 应用可以靠它提示用户"这次的数据不会保存"，而不是等用户刷新后才发现数据没了。
+   * 同一个 client 关闭后重新 initialize()，值按新连接更新。
+   */
+  readonly storage: DbStorage
   select<T>(sql: string, params?: unknown[]): Promise<T[]>
   execute(sql: string, params?: unknown[]): Promise<{ lastInsertId?: number; rowsAffected?: number }>
   /**

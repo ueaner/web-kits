@@ -1,4 +1,13 @@
-import type { BatchStatement, DbAdapter, DbAdapterConfig, DbClient, Logger, MigrationExecutor } from "../core/types"
+import type {
+  BatchStatement,
+  DbAdapter,
+  DbAdapterConfig,
+  DbClient,
+  DbStorage,
+  Logger,
+  MemoryFallbackReason,
+  MigrationExecutor,
+} from "../core/types"
 import { DbCloseError, DbError, DbExecutionError, DbInitializationError, DbTabLockError } from "../core/errors"
 
 import { sqlite3Worker1Promiser } from "@sqlite.org/sqlite-wasm"
@@ -7,7 +16,11 @@ import type { Promiser, DbId, PromiserResponseError, PromiserResponseSuccess } f
 export interface WebAdapterOptions {
   /** 等待 Worker 就绪的超时时间（毫秒），超时后 initialize() 会 reject 而不是永远 pending */
   timeoutMs?: number
-  /** OPFS 不可用（不支持/未跨域隔离/探测或打开失败）时是否静默退化为内存模式，默认 true */
+  /**
+   * OPFS 不可用（不支持/未跨域隔离/探测或打开失败）时是否退化为内存模式，默认 true。退化后
+   * client.storage 是 { persistent: false, reason }，应用可以据此提示用户"这次的数据不会保存"；
+   * 为 false 时直接抛 DbInitializationError
+   */
   fallbackToMemory?: boolean
   /**
    * 用 Web Locks API（navigator.locks）在同一 origin 的多个标签页/窗口之间协调对同一个
@@ -104,6 +117,8 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
   // 缓存进行中的 initialize()，避免并发调用各自跑一遍完整初始化流程并互相覆盖状态。
   // config 以首次调用为准（后续调用直接返回同一个 client）。
   let initPromise: Promise<DbClient> | null = null
+  // 当前连接的数据实际存在哪里；每次 doInitialize 按最终打开的文件更新
+  let storage: DbStorage = { persistent: false, reason: "opfs-unavailable" }
 
   function requirePromiser(): { p: Promiser; dbId: DbId } {
     if (!promiser || currentDbId === undefined) {
@@ -133,6 +148,10 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
   }
 
   const client: DbClient = {
+    get storage() {
+      return storage
+    },
+
     async select<T>(sql: string, params: unknown[] = []): Promise<T[]> {
       const response = await exec(sql, params)
       return (response.result.resultRows as T[]) || []
@@ -237,6 +256,8 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
     const isCrossOriginIsolated = typeof window !== "undefined" && window.crossOriginIsolated
 
     let filename: string = ":memory:"
+    // 退回内存的原因；最后真的打开了 OPFS 文件时不用
+    let fallback: MemoryFallbackReason = !isOpfsSupported ? "opfs-unsupported" : "not-cross-origin-isolated"
 
     if (!isOpfsSupported || !isCrossOriginIsolated) {
       if (!fallbackToMemory) {
@@ -260,6 +281,7 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
         }
         logger.warn("[Web DB] OPFS initialization failed or file access denied. Falling back to in-memory mode.", opfsError)
         filename = ":memory:"
+        fallback = "opfs-unavailable"
       }
     }
 
@@ -316,11 +338,14 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
         if (filename !== ":memory:" && fallbackToMemory) {
           logger.warn("[Web DB] Failed to open the OPFS database. Falling back to in-memory mode.", promiserErrorCause(openError))
           currentDbId = await openDatabase(promiser, ":memory:")
+          filename = ":memory:"
+          fallback = "open-failed"
         } else {
           throw openError
         }
       }
 
+      storage = filename === ":memory:" ? { persistent: false, reason: fallback } : { persistent: true }
       return client
     } catch (error) {
       promiser = null

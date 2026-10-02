@@ -7,6 +7,7 @@ import { useDatabase } from "../src/react/useDatabase"
 import type { DbClient } from "../src/core/types"
 
 const stubClient: DbClient = {
+  storage: { persistent: true },
   select: async () => [],
   execute: async () => ({}),
   executeBatch: async () => {},

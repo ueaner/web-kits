@@ -9,6 +9,13 @@ async function createClient() {
   return createDbClient({ name: "test", adapter: createMemoryAdapter(), migrations: MIGRATIONS })
 }
 
+describe("storage", () => {
+  it("is never persistent on the memory adapter", async () => {
+    const client = await createClient()
+    expect(client.storage).toEqual({ persistent: false, reason: "memory-adapter" })
+  })
+})
+
 describe("executeBatch", () => {
   it("runs multiple parameterless statements", async () => {
     const client = await createClient()
