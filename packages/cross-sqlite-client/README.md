@@ -220,6 +220,9 @@ Requires React 19 (it's built on `use`, Suspense and transitions).
 - `key` finds the query in the cache: it must be JSON-serializable and include
   every variable `run` uses. Same key, same query — components using the same
   key share one.
+- Two `useDbQuery` calls in one component run **one after the other**: the
+  first suspends before the second starts. Read what one view needs in one
+  query, with `Promise.all`.
 - Results are cached per client. **Every write clears the cache** and
   re-queries inside `startTransition`: the old data stays on screen until the
   new result is in (no fallback), and back-to-back writes only ever show the

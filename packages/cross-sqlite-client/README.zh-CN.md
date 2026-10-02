@@ -177,6 +177,7 @@ await createDbClient({
 **`useDbQuery`：**
 
 - `key` 用来在缓存里找到这次查询，要能 JSON 序列化，而且要包含 `run` 用到的所有变量。`key` 一样就是同一个查询：用同一个 `key` 的组件共用一次查询。
+- 一个组件里调用两次 `useDbQuery` 是**串行**的：第一个挂起时，第二个还没开始。一个界面要的几份数据，放进一个查询里用 `Promise.all` 一起读。
 - 结果按 client 缓存。**每次写入都会清空缓存**，并在 `startTransition` 里重新查询：新结果出来之前旧数据一直显示，不会退回 fallback；连着几次写入时，只会显示最后一次的结果。
 - `key` 变化是你自己发起的更新，会挂起到 fallback。想在新结果出来之前保留旧数据（比如分页），把改变 `key` 的 `setState` 包在 `startTransition` 里：
 
