@@ -1,6 +1,6 @@
 # cross-sqlite-client
 
-面向 JavaScript/TypeScript 应用的跨平台（Web + Tauri）SQLite 客户端：一个统一的 `DbClient` 接口、版本化迁移框架、以及 React 绑定——业务 schema 完全由调用方定义。你提供自己的 schema 并选一个适配器，库负责抹平底层平台差异。
+面向 JavaScript/TypeScript 应用的跨平台（Web + Tauri）SQLite 客户端：一个统一的 `DbClient` 接口、版本化迁移框架、写入通知、以及基于 Suspense 的 React 绑定——业务 schema 完全由调用方定义。你提供自己的 schema 并选一个适配器，库负责抹平底层平台差异。
 
 ## 为什么需要它
 
@@ -47,34 +47,36 @@ export const clientPromise = createDbClient({
 })
 ```
 
-**3. 通过 React Provider 提供给组件树：**
+**3. 通过 React Provider 提供给组件树**，加载状态交给 `<Suspense>`，初始化失败交给错误边界：
 
 ```tsx
+import { Suspense } from "react"
 import { DatabaseProvider } from "cross-sqlite-client/react"
 import { clientPromise } from "./appDb"
 
 function App() {
   return (
     <DatabaseProvider client={clientPromise}>
-      <Router />
+      <ErrorBoundary fallback={<DbErrorPage />}>
+        <Suspense fallback={<Spinner />}>
+          <Router />
+        </Suspense>
+      </ErrorBoundary>
     </DatabaseProvider>
   )
 }
 ```
 
-**4. 在任意组件里读取客户端：**
+**4. 在组件里查询和写入。** 写入以后不用手动刷新：`useDbQuery` 收到写入通知，会重新查询，新结果出来之前旧数据一直显示：
 
 ```tsx
-import { useDatabase } from "cross-sqlite-client/react"
+import { useDbClient, useDbQuery } from "cross-sqlite-client/react"
 
 function TodoList() {
-  const { dbClient, isDbReady, isLoading, dbError } = useDatabase()
+  const client = useDbClient()
+  const todos = useDbQuery(["todos"], (db) => db.select<Todo>("SELECT id, title FROM todos ORDER BY id"))
 
-  if (isLoading) return <Spinner />
-  if (dbError) return <ErrorMessage error={dbError} />
-  if (!isDbReady || !dbClient) return null
-
-  // dbClient.select<T>(sql, params?) / dbClient.execute(sql, params?) / dbClient.executeBatch(statements) / dbClient.close()
+  const add = (title: string) => client.execute("INSERT INTO todos (title) VALUES (?)", [title])
   // ...
 }
 ```
@@ -83,35 +85,43 @@ function TodoList() {
 
 ### 核心（`cross-sqlite-client`）
 
-| 导出                                                           | 说明                                                                                                                             |
-| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `createDbClient(options)`                                      | 初始化适配器、应用 `pragmas`、执行待应用迁移，返回 `Promise<DbClient>`。若 PRAGMA/迁移阶段失败，会先关闭已打开的连接再向上抛错。 |
-| `runMigrations(db, migrations, options?)`                      | `createDbClient` 内部使用的迁移运行器；不经过 `createDbClient` 时可直接调用。                                                    |
-| `defaultExecutor`                                              | 未设置 `migrationOptions.executor` 时使用的默认迁移执行器：通过 `executeBatch()` 执行一个迁移的全部语句，无事务包裹。            |
-| `DbClient`（类型）                                             | `{ select<T>(sql, params?), execute(sql, params?), executeBatch(statements), close() }` —— 详见下文。                            |
-| `DbAdapter` / `DbAdapterConfig`（类型）                        | 各 `createXAdapter()` 工厂返回的接口 / 传给 `initialize()` 的 `{ name }` 配置。                                                  |
-| `BatchStatement` / `Logger`（类型）                            | `executeBatch()` 的语句类型 `string \| { sql, params? }` / 诊断输出通道（`{ warn, error }`，默认 `console`）。                   |
-| `Migration` / `MigrationExecutor` / `MigrationOptions`（类型） | 见[编写迁移](#编写迁移)。                                                                                                        |
-| `DbError` 及子类                                               | 见[错误](#错误)。                                                                                                                |
+| 导出                                                            | 说明                                                                                                                                         |
+| --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createDbClient(options)`                                       | 初始化适配器、应用 `pragmas`、执行待应用迁移，返回带写入通知的 `Promise<DbClient>`。若 PRAGMA/迁移阶段失败，会先关闭已打开的连接再向上抛错。 |
+| `runMigrations(db, migrations, options?)`                       | `createDbClient` 内部使用的迁移运行器；不经过 `createDbClient` 时可直接调用。                                                                |
+| `defaultExecutor`                                               | 未设置 `migrationOptions.executor` 时使用的默认迁移执行器：通过 `executeBatch()` 执行一个迁移的全部语句，无事务包裹。                        |
+| `DbConnection` / `DbClient`（类型）                             | 适配器返回的连接 / `createDbClient()` 返回的、多了 `onWrite` 和 `groupWrites` 的 client —— 详见下文。                                        |
+| `DbAdapter` / `DbAdapterConfig` / `DbInitializeOptions`（类型） | 各 `createXAdapter()` 工厂返回的接口 / 传给 `initialize()` 的 `{ name }` 配置 / `initialize()` 的第二个参数 `{ signal }`。                   |
+| `BatchStatement` / `Logger`（类型）                             | `executeBatch()` 的语句类型 `string \| { sql, params? }` / 诊断输出通道（`{ warn, error }`，默认 `console`）。                               |
+| `Migration` / `MigrationExecutor` / `MigrationOptions`（类型）  | 见[编写迁移](#编写迁移)。                                                                                                                    |
+| `DbError` 及子类                                                | 见[错误](#错误)。                                                                                                                            |
 
 ```ts
 import { createDbClient, runMigrations, defaultExecutor } from "cross-sqlite-client"
 ```
 
-每个适配器都实现的 `DbClient` 接口：
+每个适配器的 `initialize()` 返回一个 `DbConnection`；`createDbClient()` 在它外面装上写入通知，返回 `DbClient`：
 
 ```ts
-interface DbClient {
+interface DbConnection {
+  readonly storage: DbStorage
   select<T>(sql: string, params?: unknown[]): Promise<T[]>
   execute(sql: string, params?: unknown[]): Promise<{ lastInsertId?: number; rowsAffected?: number }>
   executeBatch(statements: BatchStatement[]): Promise<void>
   close(): Promise<void>
 }
+
+interface DbClient extends DbConnection {
+  onWrite(listener: () => void): () => void // 返回取消订阅的函数
+  groupWrites<T>(fn: () => Promise<T>): Promise<T>
+}
 ```
+
+应用代码用 `DbClient`。只需要执行 SQL 的地方（比如仓储层）可以把参数类型写成 `DbConnection`，两种都能传进去。写入通知的细节见[写入通知](#写入通知)。
 
 `executeBatch()` 按顺序执行一批语句，**无跨语句事务保证**——全部语句不带绑定参数时，web 和 memory 适配器会把它们拼成一条 SQL 一次性发给底层引擎（web 适配器每条语句省一次 Worker 往返）；只要批内有**任何**一条带参语句，整批退化为逐条 `execute()`。库刻意不提供业务侧事务 API：连接池型适配器（Tauri）无法保证 `BEGIN`/`COMMIT` 落在同一条物理连接上，因此业务多语句写入应自行保证幂等。
 
-`createDbClient()` 还接受两个可选字段：
+`createDbClient()` 还接受几个可选字段：
 
 ```ts
 await createDbClient({
@@ -126,6 +136,8 @@ await createDbClient({
   pragmas: { foreign_keys: true, journal_mode: "WAL" },
   // 库告警/错误的诊断输出通道（默认 console）。
   logger: myLogger, // { warn(message, ...args), error(message, ...args) }
+  // 原样传给 adapter.initialize()：取消初始化。目前只有 web 适配器在 singleTabLock: "wait" 下排队等锁时用到。
+  signal: AbortSignal.timeout(5000),
 })
 ```
 
@@ -147,36 +159,107 @@ await createDbClient({
 | ------------------ | --------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `timeoutMs`        | `15000`   | 等待 SQLite Worker 就绪的超时时间；若 Worker 脚本加载失败，不设超时会让 `initialize()` 永远 pending。                                       |
 | `fallbackToMemory` | `true`    | OPFS 不可用时是否静默回退到 `:memory:`（包括探测通过但打开 OPFS 文件失败的情况），而不是抛错。详见 [COOP/COEP](#opfs-持久化需要-coopcoep)。 |
-| `singleTabLock`    | `true`    | 是否跨浏览器标签页协调对同一 OPFS 文件的访问。详见[多标签页协调](#多标签页协调)。                                                           |
+| `singleTabLock`    | `"fail"`  | 另一个标签页已经打开同一个 OPFS 文件时怎么办：`"fail"` 立即报错，`"wait"` 排队等，`"off"` 不协调。详见[多标签页协调](#多标签页协调)。       |
 | `logger`           | `console` | 诊断信息（OPFS 降级告警、Worker 错误）的输出位置。传入自己的 `{ warn, error }` 可接入应用的日志/监控。                                      |
 
-**`createTauriAdapter()`** 和 **`createMemoryAdapter()`** 不接受选项。`createMemoryAdapter()` 用于测试——见[测试](#测试)。
+**`createTauriAdapter()`** 和 **`createMemoryAdapter()`** 不接受选项；它们的 `initialize()` 只在开始时检查一次 `signal`。`createMemoryAdapter()` 用于测试——见[测试](#测试)。
 
 ### React（`cross-sqlite-client/react`）
 
-| 导出                              | 说明                                                                                                                                                                                                                                    |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<DatabaseProvider client={...}>` | 接收 `DbClient` 或 `Promise<DbClient>`（通常是 `createDbClient()` 的返回值），解析后通过 Context 暴露。它**不**决定用哪个适配器或迁移哪些 schema——那是应用层的职责（见快速开始）——也**不**在卸载时调用 `client.close()`（原因见下文）。 |
-| `useDatabase()`                   | 读取 Context：`{ dbClient, isDbReady, isLoading, dbError }`。在 `DatabaseProvider` 外调用会抛错。                                                                                                                                       |
+需要 React 19（用到 `use`、Suspense 和 transition）。
 
-关于 `DatabaseProvider` 有两点值得注意：
+| 导出                              | 说明                                                                                                                                                                                             |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `<DatabaseProvider client={...}>` | 接收 `Promise<DbClient>`（通常是 `createDbClient()` 的返回值；已就绪的 client 用 `Promise.resolve(client)`）。它**不**决定用哪个适配器或迁移哪些 schema，也**不**在卸载时调用 `client.close()`。 |
+| `useDbClient()`                   | 返回 client。还没就绪时挂起（最近的 `<Suspense>` 显示 fallback）；初始化失败时把错误（包括 `DbTabLockError`）抛给最近的错误边界。在 `DatabaseProvider` 外调用会抛错。                            |
+| `useDbQuery(key, run)`            | 返回 `run(client)` 的结果。没出结果时挂起，出错时抛给错误边界。有写入时自动重新查询，见下文。                                                                                                    |
 
-- **没有内置 `retry`。** `client` prop 只会进入最终状态一次——重试意味着传给它一个**新的 Promise**，prop 引用变化会重新触发初始化。prop 变化的瞬间，context 会先回到完全未就绪状态（`dbClient: null`、`isDbReady: false`），直到新 Promise resolve——窗口期内消费方不会看到旧连接：
+**`useDbQuery`：**
+
+- `key` 用来在缓存里找到这次查询，要能 JSON 序列化，而且要包含 `run` 用到的所有变量。`key` 一样就是同一个查询：用同一个 `key` 的组件共用一次查询。
+- 结果按 client 缓存。**每次写入都会清空缓存**，并在 `startTransition` 里重新查询：新结果出来之前旧数据一直显示，不会退回 fallback；连着几次写入时，只会显示最后一次的结果。
+- `key` 变化是你自己发起的更新，会挂起到 fallback。想在新结果出来之前保留旧数据（比如分页），把改变 `key` 的 `setState` 包在 `startTransition` 里：
 
   ```tsx
-  function App() {
-    const [clientPromise, setClientPromise] = useState(() => createDbClient({ ... }));
-
-    return (
-      <DatabaseProvider client={clientPromise}>
-        {/* 出现 dbError 时，例如点击「重试」按钮：setClientPromise(createDbClient({ ... })) */}
-        <Router />
-      </DatabaseProvider>
-    );
+  function Notes() {
+    const [limit, setLimit] = useState(20)
+    const notes = useDbQuery(["notes", limit], (db) => db.select<Note>("SELECT * FROM notes ORDER BY id DESC LIMIT ?", [limit]))
+    const more = () => startTransition(() => setLimit((n) => n + 20))
+    // ...
   }
   ```
 
-- **卸载时不自动 `close()`。** 谁创建 client，谁负责关闭。如果 `DatabaseProvider` 自动关闭 client，那么当它因为条件渲染、路由重挂载、测试 setup/teardown 而卸载又重新挂载时，被缓存/共享的 client（比如应用级单例）就会被直接关掉——结果 `isDbReady: true`，但连接其实已经死了。如果 client 生命周期需要绑定到某个特定范围，请在你创建它的地方自行关闭。
+- 出错的查询会一直留在缓存里，直到下一次写入；想马上重试，就换一个 `key`。
+- 刻意不做缓存过期、重试、分页、后台刷新。需要这些的话用 [TanStack Query](https://tanstack.com/query)，把写入通知接到它的失效上：
+
+  ```ts
+  const client = await clientPromise
+  client.onWrite(() => queryClient.invalidateQueries())
+  ```
+
+为什么 promise 要缓存在组件外面：组件第一次挂载就挂起时，React 会丢掉它的 state，promise 存在 state 里的话，重试时又会新建一个，于是一直挂起、反复查询。所以缓存放在 client 上，靠 `key` 找回来。
+
+关于 `DatabaseProvider` 有两点值得注意：
+
+- **没有内置 `retry`。** 重试就是创建一个**新的 Promise** 传进来，同时换掉包住它的错误边界的 `key`（不然错误边界还停在出错状态）：
+
+  ```tsx
+  function App() {
+    const [clientPromise, setClientPromise] = useState(() => createDbClient({ ... }))
+    const [attempt, setAttempt] = useState(0)
+    const retry = () => {
+      setClientPromise(createDbClient({ ... }))
+      setAttempt((n) => n + 1)
+    }
+
+    return (
+      <DatabaseProvider client={clientPromise}>
+        <DbErrorBoundary key={attempt} onRetry={retry}>
+          <Suspense fallback={<Spinner />}>
+            <Router />
+          </Suspense>
+        </DbErrorBoundary>
+      </DatabaseProvider>
+    )
+  }
+  ```
+
+- **卸载时不自动 `close()`。** 谁创建 client，谁负责关闭。如果 `DatabaseProvider` 自动关闭 client，那么当它因为条件渲染、路由重挂载、测试 setup/teardown 而卸载又重新挂载时，被缓存/共享的 client（比如应用级单例）就会被直接关掉。如果 client 生命周期需要绑定到某个特定范围，请在你创建它的地方自行关闭。
+
+## 写入通知
+
+`createDbClient()` 返回的 client 在每次写入以后通知你：
+
+```ts
+const unsubscribe = client.onWrite(() => {
+  // 有写入：刷新界面、让缓存失效……
+})
+```
+
+- `execute()` 和 `executeBatch()` 结束后通知，**成功和失败都通知**：`executeBatch` 没有事务，中途失败时前面的语句已经生效了。
+- `select()` 不通知。写语句（包括 `INSERT … RETURNING`）要走 `execute()`。
+- 同一个任务里的多次写入合并成一次通知，在写入的 Promise 结束之后异步发出，不拖慢写入。
+- listener 抛出的错误交给 `logger`，不影响写入，也不影响其他 listener。`close()` 之后不再通知。
+- `createDbClient()` 里执行的迁移不通知。直接用 `adapter.initialize()` 拿到的 `DbConnection` 也不通知。
+
+**只说明"有写入"，不说明写了哪张表。** 失效通知宁可多发、不能漏发：多发一次只是多查一次，漏发界面就显示旧数据。而按表通知的几条路都会漏：sqlite-wasm 的 Worker1 接口和 Tauri 的 `plugin-sql` 都拿不到 SQLite 的 `update_hook`；连接池上 `TEMP` 触发器靠不住；从 SQL 里解析表名会漏掉触发器和外键级联写到的表。
+
+**`groupWrites(fn)`**：`fn` 执行期间的写入先攒着，`fn` 结束（成功或抛错）以后合并成一次通知；可以嵌套，最外层结束时才通知。手写事务一定要放进来，否则监听方可能在 `COMMIT` 之前重新查询，读到还没提交的数据（web 适配器是单连接，查询会落进同一个事务）：
+
+```ts
+await client.groupWrites(async () => {
+  await client.execute("BEGIN")
+  try {
+    for (const todo of todos) await client.execute("INSERT INTO todos (title) VALUES (?)", [todo])
+    await client.execute("COMMIT")
+  } catch (error) {
+    await client.execute("ROLLBACK").catch(() => {})
+    throw error
+  }
+})
+```
+
+它管的是通知，不是事务：同时进行的几个 `groupWrites` 会一起等到最后一个结束才通知。连着执行好几条写入、又不想通知好几次时，也可以用它。
 
 ## 编写迁移
 
@@ -244,22 +327,28 @@ if (!client.storage.persistent) {
 
 sqlite-wasm 的 `opfs` VFS 自带锁协议，因此两个标签页同时写同一个 OPFS 文件时**不会损坏数据，通常也不会卡死**——失败的标签页会收到一个可捕获的 "database is locked" SQL 错误。但这个错误只在某条查询恰好撞上竞争时才暴露，而且不会告诉你**为什么**失败。
 
-默认开启 `singleTabLock: true` 时，`createWebAdapter()` 会在打开数据库文件前用 [Web Locks API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Locks_API) 申请一个命名锁。如果另一个标签页已经持有该锁，`initialize()` 会立即以 `DbTabLockError` reject，而不是让应用在之后的某次随机查询里才发现失败——捕获它之后可以展示「该应用已在另一个标签页打开」之类的提示。传 `singleTabLock: false` 可跳过此行为，只依赖 sqlite-wasm 自身的重试/`SQLITE_BUSY` 处理。它只对 OPFS 持久化路径生效——`:memory:` 每个标签页互相独立，无需协调。
+所以 `createWebAdapter()` 会在打开数据库文件前用 [Web Locks API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Locks_API) 申请一个命名锁。另一个标签页已经持有这把锁时，按 `singleTabLock` 处理：
 
-锁原语本身 `tryAcquireTabLock(lockName)` 也从 `cross-sqlite-client/adapters/web` 导出，应用如果需要为数据库之外的资源做同样的跨标签页尽力协调，可以直接使用。
+- `"fail"`（默认）：`initialize()` 立即以 `DbTabLockError` reject。捕获它之后可以展示「该应用已在另一个标签页打开」之类的提示。
+- `"wait"`：排队等另一个标签页放开（关闭标签页时浏览器会自动放开）。等多久由 `createDbClient({ signal })` 决定，比如 `AbortSignal.timeout(5000)`；不传就一直等。被取消（或在等待中调用 `close()`）时以 `DbTabLockError` reject，取消原因在 `cause` 里。恰好在取消的同时轮到的锁会立即放开，不会留下一把没人用的锁。
+- `"off"`：不协调，只依赖 sqlite-wasm 自身的重试/`SQLITE_BUSY` 处理。
+
+默认不是 `"wait"`：另一个标签页一直开着时，页面会一直停在加载，没有任何提示，这比立即报错更难排查。锁只对 OPFS 持久化路径生效——`:memory:` 每个标签页互相独立，无需协调。
+
+锁原语本身 `acquireTabLock(lockName, { wait?, signal? })` 也从 `cross-sqlite-client/adapters/web` 导出：拿到锁时返回 `release()`；不等待时拿不到返回 `null`；等待时被取消抛出 `signal.reason`。应用如果需要为数据库之外的资源做同样的跨标签页协调，可以直接使用。
 
 ## 错误
 
 所有适配器都抛出以下错误类（全部继承 `DbError extends Error`，均可选传入 `cause`）：
 
-| 类                                           | 触发时机                                                                                               |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `DbError`                                    | 通用/用法错误，例如 `initialize()` 还没 resolve 就调用 `select()`/`execute()`，或 `close()` 之后调用。 |
-| `DbInitializationError`                      | `adapter.initialize()` 失败（Worker/OPFS/Tauri 加载失败等）。                                          |
-| `DbExecutionError`（带 `.sql` 和 `.params`） | `select()`/`execute()`/`executeBatch()` 调用失败。                                                     |
-| `DbMigrationError`（带 `.version`）          | 某条迁移失败；底层错误包装在 `cause` 里。由 `runMigrations`/`createDbClient` 抛出。                    |
-| `DbCloseError`                               | `client.close()` 失败。                                                                                |
-| `DbTabLockError`                             | （仅 Web 适配器，`singleTabLock: true`）另一个标签页已持有数据库锁。                                   |
+| 类                                           | 触发时机                                                                                                     |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `DbError`                                    | 通用/用法错误，例如 `initialize()` 还没 resolve 就调用 `select()`/`execute()`，或 `close()` 之后调用。       |
+| `DbInitializationError`                      | `adapter.initialize()` 失败（Worker/OPFS/Tauri 加载失败等）。                                                |
+| `DbExecutionError`（带 `.sql` 和 `.params`） | `select()`/`execute()`/`executeBatch()` 调用失败。                                                           |
+| `DbMigrationError`（带 `.version`）          | 某条迁移失败；底层错误包装在 `cause` 里。由 `runMigrations`/`createDbClient` 抛出。                          |
+| `DbCloseError`                               | `client.close()` 失败。                                                                                      |
+| `DbTabLockError`                             | （仅 Web 适配器）另一个标签页已持有数据库锁（`"fail"`），或排队等锁时被取消（`"wait"`，原因在 `cause` 里）。 |
 
 ```ts
 import { DbTabLockError } from "cross-sqlite-client"
@@ -278,19 +367,23 @@ try {
 测试时请用 `createMemoryAdapter()`，而不是 mock `DbClient`——它是真正的 SQLite 引擎（与 Web 适配器使用同一个 `@sqlite.org/sqlite-wasm` 的 Node/主线程版本），因此你的 SQL 会真实执行，行为与 Web 适配器一致，只是没有持久化：
 
 ```ts
+import { createDbClient } from "cross-sqlite-client"
 import { createMemoryAdapter } from "cross-sqlite-client/adapters/memory"
-import { runMigrations } from "cross-sqlite-client"
 
-const client = await createMemoryAdapter().initialize({ name: "test" })
-await runMigrations(client, APP_MIGRATIONS)
-// 正常使用 client.select() / client.execute()
+const client = await createDbClient({ name: "test", adapter: createMemoryAdapter(), migrations: APP_MIGRATIONS })
+// 正常使用 client.select() / client.execute()，写入通知也照常工作
 ```
+
+只测仓储层、不需要写入通知时，也可以直接用 `createMemoryAdapter().initialize({ name: "test" })` 拿一个 `DbConnection`，再自己 `runMigrations(connection, APP_MIGRATIONS)`。
 
 每次 `createMemoryAdapter()` 调用都是一个全新的独立实例，因此不同测试（或同一进程里的并行测试）不会共享状态。
 
 库自身的测试套件（`pnpm test`）覆盖迁移运行器、客户端生命周期和 React 绑定；CI（`.github/workflows/ci.yml`）在 Node 24 上运行 lint、格式检查（`oxfmt`）、typecheck、测试、构建和 `publint`（Node 24 是开发的最低版本要求，见 `package.json` 的 `engines`）。提交前请运行 `pnpm format` 保持代码树格式整洁。
 
 ## 已知限制
+
+- **`select()` 执行的写语句不通知。** 写语句（包括 `INSERT … RETURNING`）要走 `execute()`，见[写入通知](#写入通知)。
+- **没放进 `groupWrites` 的手写事务，监听方可能读到未提交的数据。** 见[写入通知](#写入通知)。
 
 - **`lastInsertId` 精度。** `DbClient.execute()` 返回的 `lastInsertId` 类型是 `number`。Web 适配器会把 SQLite 的 `sqlite3_last_insert_rowid()`（64 位 `bigint`，最大 2^63-1）通过 `Number()` 转换，因此超过 `Number.MAX_SAFE_INTEGER`（2^53-1）时会丢失精度。对典型本地优先应用不是问题（需要单表超过 9 千万亿行才会触发），但如果你需要精确的大整数 rowid，请用专门的 `SELECT last_insert_rowid()` 查询读取。
 - **没有 OPFS 降级层。** OPFS/跨源隔离不可用时，`createWebAdapter()` 只有两种状态：完整 OPFS 持久化，或完全没有持久化的 `:memory:`。sqlite-wasm 提供了基于 `localStorage`/`sessionStorage` 的 `kvvfs` 后端，可作为中间层，但当前版本尚未接入——如果你需要在无法达到跨源隔离的部署环境里获得持久化，可以考虑接入它（见 [COOP/COEP](#opfs-持久化需要-coopcoep)）。
@@ -299,22 +392,24 @@ await runMigrations(client, APP_MIGRATIONS)
 
 以下是刻意的设计取舍，而非缺陷：
 
-- **bfcache 冻结的标签页会一直持有数据库锁。** `singleTabLock` 基于 Web Locks API；被浏览器前进/后退缓存（bfcache）冻结（而非关闭）的标签页会持续持有锁，其他标签页会一直收到 `DbTabLockError`，直到被冻结的标签页被丢弃。真正关闭或崩溃的标签页，其锁会由浏览器自动释放。
+- **bfcache 冻结的标签页会一直持有数据库锁。** `singleTabLock` 基于 Web Locks API；被浏览器前进/后退缓存（bfcache）冻结（而非关闭）的标签页会持续持有锁，其他标签页会一直收到 `DbTabLockError`（`"wait"` 下则一直排队，直到 `signal` 超时），直到被冻结的标签页被丢弃。真正关闭或崩溃的标签页，其锁会由浏览器自动释放。
 - **没有 Web Locks API → 没有跨标签页协调。** 在老旧浏览器或非安全（非 HTTPS）上下文中，`singleTabLock` 会静默退化为不做协调：多个标签页可以同时打开同一个 OPFS 文件，竞争会在此后以 sqlite-wasm 抛出的可捕获的 "database is locked"（`SQLITE_BUSY`）错误形式暴露。
 - **内存降级模式下刷新页面会丢数据。** OPFS 不可用且 `fallbackToMemory` 开启时，一切功能正常但不持久化。发生降级时适配器会发出 `logger.warn`，`client.storage` 也会是 `persistent: false` 并给出原因——应用需要向用户提示时检查它即可。
 
 ## 版本策略
 
-本包处于 0.x 阶段：**minor 版本可能包含破坏性变更**（0.2.0 就给 `DbClient` 新增了必选方法 `executeBatch`，自定义 adapter/client 的实现会在编译期报错）。请锁定精确版本号，升级前阅读 [CHANGELOG](CHANGELOG.md)。
+本包处于 0.x 阶段：**minor 版本可能包含破坏性变更**（0.2.0 给 `DbClient` 新增了必选方法 `executeBatch`；0.4.0 把适配器返回的连接改名为 `DbConnection`、React 绑定改成基于 Suspense、`singleTabLock` 改成三个字符串值，并要求 React 19）。请锁定精确版本号，升级前阅读 [CHANGELOG](CHANGELOG.md)。
 
 ## 示例
 
 [`examples/`](./examples/) 目录下有一个可运行的浏览器演示应用（Vite + React）——详细说明见它自己的 README。这是一个便签 CRUD 应用，演示了：
 
-- `DatabaseProvider` / `useDatabase`——loading / error / ready 三种状态
+- `DatabaseProvider` / `useDbClient` 配合 `<Suspense>` 和错误边界
+- `useDbQuery`：增删便签以后列表自动刷新，没有手动刷新的代码
+- `groupWrites`：一个手写事务里批量插入，只发一次写入通知
 - 启动时应用 v1 → v2 的版本化迁移
 - OPFS 持久化，以及缺少跨源隔离时静默降级到 `:memory:`
-- `singleTabLock`：再开一个标签页会触发 `DbTabLockError`，以及重试流程（传入一个新的 client promise）
+- `singleTabLock`：再开一个标签页，`"fail"` 下立即 `DbTabLockError`，`"wait"` 下排队等第一个标签页关掉；以及重试流程（新的 client promise 加新的错误边界 `key`）
 
 OPFS 持久化要求页面带 COOP/COEP 响应头（见 [OPFS 持久化需要 COOP/COEP](#opfs-持久化需要-coopcoep)）——演示应用的 Vite 配置已内置。在仓库根目录运行 `pnpm example:csc`（或在 `examples/` 目录里 `pnpm dev`），然后打开 <http://localhost:5176>。
 

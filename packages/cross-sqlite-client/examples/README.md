@@ -1,6 +1,6 @@
 # cross-sqlite-client 示例：便签（notes）
 
-一个基于 `cross-sqlite-client` + sqlite-wasm + OPFS 的迷你便签应用，演示库的初始化状态机、迁移、CRUD、持久化降级与单标签页锁。
+一个基于 `cross-sqlite-client` + sqlite-wasm + OPFS 的迷你便签应用，演示库的初始化、迁移、写入通知和自动刷新的查询、持久化降级与单标签页锁。
 
 ## 启动
 
@@ -20,13 +20,14 @@ pnpm dev
 
 ## 演示点
 
-- **初始化与状态机**：模块作用域创建 `createDbClient()` 的 Promise，交给 `<DatabaseProvider>` 解析；状态面板实时展示 `useDatabase()` 返回的 `isLoading` / `isDbReady` / `dbError` 三态。
-- **迁移**：`src/migrations.ts` 定义了两个版本——v1 建 `notes` 表，v2 建索引和 `note_meta` 表。所有语句幂等（`CREATE ... IF NOT EXISTS`；SQLite 不支持 `ADD COLUMN IF NOT EXISTS`，所以不用 `ALTER TABLE`）。迁移经 `transactionalExecutor` 包在事务里执行（web 适配器是单连接，安全）。状态面板查询 `schema_version` 表展示已应用的版本。
-- **CRUD**：添加便签（展示 `lastInsertId`）、列表按 id 倒序、逐条删除（展示 `rowsAffected`）。
-- **持久化与降级**：状态面板显示 `window.crossOriginIsolated`。为 `true` 时数据写入 OPFS，**添加便签后刷新页面，数据仍在**；为 `false` 时（OPFS 不可用）静默降级为 `:memory:`，刷新即丢，日志区会有降级告警。
-- **单标签页锁**：`singleTabLock` 默认开启。**在第二个标签页打开同一 URL**，其初始化会以 `DbTabLockError` 失败，状态面板显示「数据库已在另一个标签页打开，本页面为只读演示」。关闭第一个标签页后点「重试」即可接管。
-- **重试**：`dbError` 状态下点击「重试」——按库的约定创建一个新的 client Promise 传给 `DatabaseProvider`，触发重新初始化。
-- **事件日志**：右侧面板（最新在前，最多 50 条）记录初始化进度、迁移执行、OPFS 降级告警、锁错误和每次 CRUD 操作。
+- **初始化**：`createDbClient()` 的 Promise 交给 `<DatabaseProvider>`。组件里用 `useDbClient()` 拿 client：没就绪时 `<Suspense>` 显示「数据库初始化中…」，失败时错误边界（`src/DbErrorBoundary.tsx`）接手。
+- **迁移**：`src/migrations.ts` 定义了两个版本——v1 建 `notes` 表，v2 建索引和 `note_meta` 表。所有语句幂等（`CREATE ... IF NOT EXISTS`；SQLite 不支持 `ADD COLUMN IF NOT EXISTS`，所以不用 `ALTER TABLE`）。迁移经 `transactionalExecutor` 包在事务里执行（web 适配器是单连接，安全）。状态面板用 `useDbQuery` 查询 `schema_version` 表展示已应用的版本。
+- **写入通知和自动刷新**：便签列表是 `useDbQuery(["notes"], …)`。新增、删除以后没有任何手动刷新的代码：`client.onWrite` 通知以后，列表在 transition 里重新查询，查完之前旧列表一直显示。日志区每次写入都会出现一行「onWrite：有写入」。
+- **`groupWrites`**：「批量 10 条」在一个手写事务里插入十条，整个事务放在 `client.groupWrites` 里：日志里只有一行写入通知，而且在 `COMMIT` 之后。
+- **持久化与降级**：状态面板显示 `client.storage`。数据写入 OPFS 时，**添加便签后刷新页面，数据仍在**；OPFS 不可用时静默降级为 `:memory:`，刷新即丢，日志区会有降级告警。
+- **单标签页锁**：**在第二个标签页打开同一 URL**。锁模式是 `"fail"`（默认）时，它立即以 `DbTabLockError` 失败；切到 `"wait"` 时，它排队等第一个标签页关掉，最多等 10 秒（`AbortSignal.timeout`），关掉第一个标签页它就自己打开了。
+- **重试**：出错时点击「重试」——按库的约定创建一个新的 client Promise 传给 `DatabaseProvider`，同时换掉错误边界的 `key`。
+- **事件日志**：右侧面板（最新在前，最多 50 条）记录初始化进度、迁移执行、OPFS 降级告警、锁错误、写入通知和每次增删操作。
 
 ## OPFS 与跨域隔离响应头
 

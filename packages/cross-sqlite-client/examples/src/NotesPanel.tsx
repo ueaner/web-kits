@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react"
-import { useDatabase } from "cross-sqlite-client/react"
+import { useState } from "react"
+import { useDbClient, useDbQuery } from "cross-sqlite-client/react"
 import { appendLog } from "./log"
 
 interface Note {
@@ -13,63 +13,57 @@ function errorDetail(error: unknown): string {
 }
 
 export function NotesPanel() {
-  const { dbClient, isDbReady } = useDatabase()
-  const [notes, setNotes] = useState<Note[]>([])
+  const client = useDbClient()
+  // 新增、删除以后不用手动刷新：写入通知会让它在 transition 里重新查询，查完之前旧列表一直在
+  const notes = useDbQuery(["notes"], (db) => db.select<Note>("SELECT id, content, created_at FROM notes ORDER BY id DESC"))
   const [draft, setDraft] = useState("")
   const [busy, setBusy] = useState(false)
 
-  const refresh = useCallback(async () => {
-    if (!dbClient) return
-    const rows = await dbClient.select<Note>("SELECT id, content, created_at FROM notes ORDER BY id DESC")
-    setNotes(rows)
-  }, [dbClient])
-
-  useEffect(() => {
-    if (!isDbReady) {
-      setNotes([])
-      return
-    }
-    refresh().catch((error: unknown) => appendLog("error", `加载便签列表失败：${errorDetail(error)}`))
-  }, [isDbReady, refresh])
-
-  async function addNote() {
-    const content = draft.trim()
-    if (!dbClient || !content || busy) return
+  async function run(action: () => Promise<void>, failure: string) {
+    if (busy) return
     setBusy(true)
     try {
-      const { lastInsertId } = await dbClient.execute("INSERT INTO notes (content) VALUES (?)", [content])
+      await action()
+    } catch (error) {
+      appendLog("error", `${failure}：${errorDetail(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const addNote = () =>
+    run(async () => {
+      const content = draft.trim()
+      if (!content) return
+      const { lastInsertId } = await client.execute("INSERT INTO notes (content) VALUES (?)", [content])
       appendLog("info", `新增便签 #${lastInsertId ?? "?"}：${content}`)
       setDraft("")
-      await refresh()
-    } catch (error) {
-      appendLog("error", `新增便签失败：${errorDetail(error)}`)
-    } finally {
-      setBusy(false)
-    }
-  }
+    }, "新增便签失败")
 
-  async function removeNote(id: number) {
-    if (!dbClient || busy) return
-    setBusy(true)
-    try {
-      const { rowsAffected } = await dbClient.execute("DELETE FROM notes WHERE id = ?", [id])
+  const removeNote = (id: number) =>
+    run(async () => {
+      const { rowsAffected } = await client.execute("DELETE FROM notes WHERE id = ?", [id])
       appendLog("info", `删除便签 #${id}（影响 ${rowsAffected ?? 0} 行）`)
-      await refresh()
-    } catch (error) {
-      appendLog("error", `删除便签失败：${errorDetail(error)}`)
-    } finally {
-      setBusy(false)
-    }
-  }
+    }, "删除便签失败")
 
-  if (!isDbReady) {
-    return (
-      <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-        <h2 className="text-lg font-semibold">便签</h2>
-        <p className="mt-3 text-sm text-slate-500">数据库未就绪，便签功能暂不可用。</p>
-      </section>
+  // 手写事务放进 groupWrites：十条写入只发一次写入通知，而且是在 COMMIT 之后，
+  // 列表不会在提交之前重新查询、读到还没提交的数据
+  const addTen = () =>
+    run(
+      () =>
+        client.groupWrites(async () => {
+          await client.execute("BEGIN")
+          try {
+            for (let i = 1; i <= 10; i++) await client.execute("INSERT INTO notes (content) VALUES (?)", [`批量便签 ${i}`])
+            await client.execute("COMMIT")
+          } catch (error) {
+            await client.execute("ROLLBACK").catch(() => {})
+            throw error
+          }
+          appendLog("info", "批量新增 10 条（一个事务，一次写入通知）")
+        }),
+      "批量新增失败",
     )
-  }
 
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
@@ -93,6 +87,14 @@ export function NotesPanel() {
           className="rounded-md bg-sky-600 px-4 py-1.5 text-sm text-white hover:bg-sky-700 disabled:opacity-50"
         >
           添加
+        </button>
+        <button
+          type="button"
+          onClick={() => void addTen()}
+          disabled={busy}
+          className="rounded-md border border-sky-600 px-3 py-1.5 text-sm text-sky-700 hover:bg-sky-50 disabled:opacity-50"
+        >
+          批量 10 条
         </button>
       </form>
       <ul className="mt-4 space-y-2">
