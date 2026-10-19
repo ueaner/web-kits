@@ -1,0 +1,8 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "include": ["src", "test"],
+  "compilerOptions": {
+    // 测试在 Node 里模拟小程序（node:vm、node:fs）；src 不用 Node 的 API，tsconfig.build.json 里清空
+    "types": ["node"]
+  }
+}

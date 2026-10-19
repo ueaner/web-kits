@@ -37,7 +37,7 @@ jobs:
         if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
         run: pnpm exec changeset status --since=${{ github.event.pull_request.base.sha }}
 
-  # 三包同一套流水线，用 matrix 而不是复制三份 job
+  # 各包同一套流水线，用 matrix 而不是每包复制一份 job
   # build 在最前（PTK test-e2e fixture 与 publint 都依赖 dist/）
   package:
     needs: hygiene
@@ -45,14 +45,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [cross-tab-kit, pending-task-kit, cross-sqlite-client]
+        package: [cross-tab-kit, pending-task-kit, cross-sqlite-client, sqlite-wasm-miniprogram]
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with: { node-version: 24, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter "${{ matrix.package }}" run build
+      # `...` 把 workspace 依赖一起构建：sqlite-wasm-miniprogram 的测试经 exports 读 cross-sqlite-client 的 dist/
+      - run: pnpm --filter "${{ matrix.package }}..." run build
       # publint 检查 dist/，所以必须在 build 之后
       - run: pnpm --filter "${{ matrix.package }}" run pub:check
       - run: pnpm --filter "${{ matrix.package }}" run typecheck

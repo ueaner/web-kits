@@ -7,3 +7,6 @@ packages:
 # v10 的 onlyBuiltDependencies 已被移除，写了也不会生效。
 allowBuilds:
   lefthook: true # 把 lefthook 的 git 集成装进 .git/hooks/
+  # sqlite-wasm-miniprogram 的构建用 esbuild；它的 postinstall 只是校验 / 补下载平台二进制，
+  # 二进制已经由可选依赖 @esbuild/<平台> 装好，不需要执行
+  esbuild: false

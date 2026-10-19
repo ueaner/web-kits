@@ -1,0 +1,70 @@
+{
+  "name": "sqlite-wasm-miniprogram",
+  "version": "0.1.0",
+  "description": "The official @sqlite.org/sqlite-wasm, built to run in WeChat mini programs (WXWebAssembly): injected shims, cross-realm fixes and prebuilt callback stubs.",
+  "keywords": [
+    "miniprogram",
+    "sqlite",
+    "sqlite-wasm",
+    "wasm",
+    "wechat",
+    "wxwebassembly"
+  ],
+  "homepage": "https://github.com/ueaner/web-kits/tree/main/packages/sqlite-wasm-miniprogram#readme",
+  "bugs": {
+    "url": "https://github.com/ueaner/web-kits/issues"
+  },
+  "license": "MIT",
+  "author": "ueaner",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ueaner/web-kits.git",
+    "directory": "packages/sqlite-wasm-miniprogram"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./assets/*": "./dist/assets/*",
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src test scripts",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "test": "vitest run",
+    "test:devtools": "node scripts/devtools-probe.mjs",
+    "changeset": "changeset",
+    "pub:check": "publint",
+    "prepublishOnly": "npm run build && npm run pub:check && npm run typecheck && npm run lint && npm run format:check && npm run test"
+  },
+  "dependencies": {
+    "@sqlite.org/sqlite-wasm": "3.53.4-build1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "cross-sqlite-client": "workspace:*",
+    "esbuild": "0.25.10",
+    "miniprogram-automator": "^0.13.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@11.5.2"
+}

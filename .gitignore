@@ -16,3 +16,5 @@ packages/*/src/**/*.d.ts
 packages/*/docs/
 # 迁移方案与评审(过程产物,迁移完成后无长期价值)。留在本地供查阅。
 docs/
+# sqlite-wasm-miniprogram 的开发者工具探针生成的小程序（scripts/devtools-probe.mjs）
+.devtools-probe

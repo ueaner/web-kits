@@ -1,14 +1,15 @@
 # web-kits
 
-Monorepo for `cross-tab-kit`, `pending-task-kit`, `cross-sqlite-client`.
+Monorepo for `cross-tab-kit`, `pending-task-kit`, `cross-sqlite-client`, `sqlite-wasm-miniprogram`.
 
 ## Packages
 
 - [`cross-tab-kit`](./packages/cross-tab-kit) — cross-tab primitives (tab-lock, safe-storage, etc.)
 - [`pending-task-kit`](./packages/pending-task-kit) — cross-tab task coordination built on `cross-tab-kit`
 - [`cross-sqlite-client`](./packages/cross-sqlite-client) — cross-environment SQLite client
+- [`sqlite-wasm-miniprogram`](./packages/sqlite-wasm-miniprogram) — the official `@sqlite.org/sqlite-wasm` built for WeChat mini programs (the engine for `cross-sqlite-client`'s mini program adapter)
 
-All three build with TypeScript's `target: ES2022` (see `tsconfig.base.json`). That target reaches
+`cross-tab-kit`, `pending-task-kit` and `cross-sqlite-client` build with TypeScript's `target: ES2022` (see `tsconfig.base.json`); `sqlite-wasm-miniprogram` is bundled by esbuild with `target: es2020` (its own `scripts/build.mjs`). That target reaches
 the published artifacts — it's why `pending-task-kit`'s `dist` emits native class fields — so treat
 a change to it as a change to the packages' minimum JS engine, not as a typecheck-only tweak.
 
