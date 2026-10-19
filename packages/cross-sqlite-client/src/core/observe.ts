@@ -35,8 +35,34 @@ export function observe(connection: DbConnection, logger: Logger): DbClient {
     }
   }
 
+  // 同一个任务里发起的写入算一批，等这一批全部结束后才通知一次。只看"结束"的话，写入要等 IO 的
+  // 适配器（web 的 worker 往返、miniprogram 的落盘）上，同一个任务里发起的几次写入会在不同时刻结束，各通知一次
+  let taskBatch: Promise<unknown>[] | null = null
+
+  function track(promise: Promise<unknown>) {
+    if (!taskBatch) {
+      const batch: Promise<unknown>[] = []
+      taskBatch = batch
+      // 这一批算作一层 groupWrites：期间的通知先攒着
+      groupDepth++
+      // 微任务里关窗：当前任务里同步发起的写入都已经进了这一批
+      queueMicrotask(() => {
+        taskBatch = null
+        void Promise.allSettled(batch).then(() => {
+          groupDepth--
+          if (groupDepth === 0 && pending) markWritten()
+        })
+      })
+    }
+    taskBatch.push(promise)
+  }
+
   // 成功和失败都算写入：executeBatch 没有事务，中途失败时前面的语句已经生效
-  const write = <T>(promise: Promise<T>) => promise.finally(markWritten)
+  const write = <T>(promise: Promise<T>) => {
+    const done = promise.finally(markWritten)
+    track(done)
+    return done
+  }
 
   const client: DbClient = {
     // 转发 getter，不拷贝值：close() / 重开以后它会变

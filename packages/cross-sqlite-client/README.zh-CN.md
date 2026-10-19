@@ -145,11 +145,12 @@ await createDbClient({
 
 每次调用 `createXAdapter()` 都会返回一个**全新的、相互独立的** `DbAdapter` 实例（没有模块级单例状态），因此同一进程里可以放心创建多个——例如测试里。
 
-| 子路径                                | 工厂                         | 底层驱动                                       | `singleConnection` |
-| ------------------------------------- | ---------------------------- | ---------------------------------------------- | ------------------ |
-| `cross-sqlite-client/adapters/web`    | `createWebAdapter(options?)` | `@sqlite.org/sqlite-wasm`（Worker）            | `true`             |
-| `cross-sqlite-client/adapters/tauri`  | `createTauriAdapter()`       | `@tauri-apps/plugin-sql`                       | `false`            |
-| `cross-sqlite-client/adapters/memory` | `createMemoryAdapter()`      | `@sqlite.org/sqlite-wasm`（Node/主线程，内存） | `true`             |
+| 子路径                                     | 工厂                                | 底层驱动                                                      | `singleConnection` |
+| ------------------------------------------ | ----------------------------------- | ------------------------------------------------------------- | ------------------ |
+| `cross-sqlite-client/adapters/web`         | `createWebAdapter(options?)`        | `@sqlite.org/sqlite-wasm`（Worker）                           | `true`             |
+| `cross-sqlite-client/adapters/tauri`       | `createTauriAdapter()`              | `@tauri-apps/plugin-sql`                                      | `false`            |
+| `cross-sqlite-client/adapters/memory`      | `createMemoryAdapter()`             | `@sqlite.org/sqlite-wasm`（Node/主线程，内存）                | `true`             |
+| `cross-sqlite-client/adapters/miniprogram` | `createMiniProgramAdapter(options)` | `@sqlite.org/sqlite-wasm`（内存）+ 快照存在小程序用户文件目录 | `true`             |
 
 `singleConnection` 表示该适配器的每次 `execute()`/`select()` 是否保证落在同一条物理连接上——为什么重要，见[自定义迁移执行器](#自定义迁移执行器与-singleconnection)。
 
@@ -162,7 +163,7 @@ await createDbClient({
 | `singleTabLock`    | `"fail"`  | 另一个标签页已经打开同一个 OPFS 文件时怎么办：`"fail"` 立即报错，`"wait"` 排队等，`"off"` 不协调。详见[多标签页协调](#多标签页协调)。       |
 | `logger`           | `console` | 诊断信息（OPFS 降级告警、Worker 错误）的输出位置。传入自己的 `{ warn, error }` 可接入应用的日志/监控。                                      |
 
-**`createTauriAdapter()`** 和 **`createMemoryAdapter()`** 不接受选项；它们的 `initialize()` 只在开始时检查一次 `signal`。`createMemoryAdapter()` 用于测试——见[测试](#测试)。
+**`createTauriAdapter()`** 和 **`createMemoryAdapter()`** 不接受选项；它们的 `initialize()` 只在开始时检查一次 `signal`。`createMemoryAdapter()` 用于测试——见[测试](#测试)。**`createMiniProgramAdapter(options)`** 见[小程序适配器](#小程序适配器)。
 
 ### React（`cross-sqlite-client/react`）
 
@@ -288,13 +289,12 @@ interface MigrationOptions {
 
 ## 自定义迁移执行器与 `singleConnection`
 
-默认执行器（`defaultExecutor`）通过 `executeBatch()` 执行每个迁移的全部语句，无事务包裹。`adapters/web` 还导出了 `transactionalExecutor`，它把一次迁移包在 `BEGIN`/`COMMIT`/`ROLLBACK` 里——但这只在 `singleConnection: true` 的适配器上安全（真正的一条持久连接）。`@tauri-apps/plugin-sql` 的底层是连接池（`sqlx::Pool<Sqlite>`），多次 `execute()` 调用不保证落在同一条物理连接上，`BEGIN` 和 `COMMIT` 跨调用拆散后甚至可能不报错。`createDbClient()` 会在你把一个标记为 `requiresSingleConnection: true` 的执行器传给 `singleConnection: false` 的适配器时，提前抛错。
+默认执行器（`defaultExecutor`）通过 `executeBatch()` 执行每个迁移的全部语句，无事务包裹。根入口还导出了 `transactionalExecutor`（`adapters/web` 也转出了它，兼容旧的引入路径），它把一次迁移包在 `BEGIN`/`COMMIT`/`ROLLBACK` 里——但这只在 `singleConnection: true` 的适配器上安全（真正的一条持久连接）。`@tauri-apps/plugin-sql` 的底层是连接池（`sqlx::Pool<Sqlite>`），多次 `execute()` 调用不保证落在同一条物理连接上，`BEGIN` 和 `COMMIT` 跨调用拆散后甚至可能不报错。`createDbClient()` 会在你把一个标记为 `requiresSingleConnection: true` 的执行器传给 `singleConnection: false` 的适配器时，提前抛错。
 
 这个检查基于显式标记，而不是把执行器和 `defaultExecutor` 做引用相等比较：`transactionalExecutor` 通过 `Object.assign(fn, { requiresSingleConnection: true })` 携带标记。如果你也写了一个管理事务的自定义执行器，请用同样方式标记。完全不碰事务的执行器（例如只加日志）不需要这个标记，即使传给连接池适配器也不会被拒绝。
 
 ```ts
-import { runMigrations } from "cross-sqlite-client"
-import { transactionalExecutor } from "cross-sqlite-client/adapters/web"
+import { runMigrations, transactionalExecutor } from "cross-sqlite-client"
 
 await runMigrations(client, APP_MIGRATIONS, { executor: transactionalExecutor })
 ```
@@ -338,6 +338,45 @@ sqlite-wasm 的 `opfs` VFS 自带锁协议，因此两个标签页同时写同�
 
 锁原语本身 `acquireTabLock(lockName, { wait?, signal? })` 也从 `cross-sqlite-client/adapters/web` 导出：拿到锁时返回 `release()`；不等待时拿不到返回 `null`；等待时被取消抛出 `signal.reason`。应用如果需要为数据库之外的资源做同样的跨标签页协调，可以直接使用。
 
+## 小程序适配器
+
+`cross-sqlite-client/adapters/miniprogram` 在微信小程序里运行和 web、memory 适配器同一个官方 `@sqlite.org/sqlite-wasm` 引擎。
+引擎本身需要一份小程序专用的构建（`WXWebAssembly` 垫片、跨 realm 修正、预生成的回调桩模块），放在单独的包
+[`sqlite-wasm-miniprogram`](../sqlite-wasm-miniprogram) 里；这个适配器只负责持久化。
+
+```ts
+import { createDbClient, transactionalExecutor } from "cross-sqlite-client"
+import { createMiniProgramAdapter } from "cross-sqlite-client/adapters/miniprogram"
+import { initSqlite3 } from "sqlite-wasm-miniprogram"
+
+const adapter = createMiniProgramAdapter({
+  sqlite3: () => initSqlite3({ webAssembly: WXWebAssembly, assetsDir: "/sqlite" }),
+  fs: wx.getFileSystemManager(),
+  directory: `${wx.env.USER_DATA_PATH}/cross-sqlite-client`,
+})
+const client = await createDbClient({ name: "app", adapter, migrations, migrationOptions: { executor: transactionalExecutor } })
+```
+
+| 选项        | 说明                                                                                                                                               |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sqlite3`   | 返回已初始化的 `sqlite3` 对象。第一次 `initialize()` 时才调用；失败时 `initialize()` 失败，可以重试。                                              |
+| `fs`        | 宿主文件系统：`wx.getFileSystemManager()`（或 `Taro.getFileSystemManager()`）。用到 `mkdir`、`readFile`、`writeFile`、`rename`、`unlink`、`stat`。 |
+| `directory` | 数据库文件所在目录，通常在 `wx.env.USER_DATA_PATH` 下（与本地缓存文件共用 200 MB）。不存在时创建。                                                 |
+| `logger`    | 诊断输出（从备份恢复、发现损坏文件）。默认 `console`。                                                                                             |
+
+数据怎么存：
+
+- 数据库在内存里。每次调用结束后，**只要不在事务中、并且数据库有变化**，就导出整个库（`sqlite3_js_db_export`），原子地写到
+  `<directory>/<name>.sqlite`，**写完以后调用才返回**。`execute()` / `executeBatch()` 总是落盘；`select()` 只在它改了东西时落盘
+  （例如 `INSERT … RETURNING`）。是否在事务中用 `sqlite3_get_autocommit` 判断，不解析 SQL：事务中导出的快照会带上没提交的数据。
+- 落盘失败时，内存里的数据库恢复到上一次成功保存的快照，并抛出 `DbPersistenceError`：内存永远不会比磁盘超前，所以重试同一个调用会真正重写一次。
+- 小程序没有 fsync，掉电时可能出现"改名生效了、新文件内容没写完"。所以上一个完好版本一直保留为 `<name>.sqlite.bak`；打开时校验当前文件
+  （文件头 + `PRAGMA quick_check`），损坏就用备份。损坏的文件挪成 `<name>.sqlite.corrupt-<时间>`，**永不删除**；两个都坏了就打开一个新库
+  （并调用 `logger.error`），不让应用永远打不开。
+- 不退回内存：宿主缺少需要的能力时 `initialize()` 直接失败。同一个文件在进程内（同一个 `fs` 对象）只能打开一次。
+- 迁移用 `transactionalExecutor`，整个迁移只落盘一次。每次保存都重写整个文件，小库没有问题（几千行约 120 KB）；库变大以后，
+  可以基于宿主的同步文件 API 换成 VFS。
+
 ## 错误
 
 所有适配器都抛出以下错误类（全部继承 `DbError extends Error`，均可选传入 `cause`）：
@@ -348,6 +387,7 @@ sqlite-wasm 的 `opfs` VFS 自带锁协议，因此两个标签页同时写同�
 | `DbInitializationError`                      | `adapter.initialize()` 失败（Worker/OPFS/Tauri 加载失败等）。                                                |
 | `DbExecutionError`（带 `.sql` 和 `.params`） | `select()`/`execute()`/`executeBatch()` 调用失败。                                                           |
 | `DbMigrationError`（带 `.version`）          | 某条迁移失败；底层错误包装在 `cause` 里。由 `runMigrations`/`createDbClient` 抛出。                          |
+| `DbPersistenceError`                         | （仅小程序适配器）SQL 已经执行，但数据库没能落盘；这次的改动已经回滚，可以原样重试。                         |
 | `DbCloseError`                               | `client.close()` 失败。                                                                                      |
 | `DbTabLockError`                             | （仅 Web 适配器）另一个标签页已持有数据库锁（`"fail"`），或排队等锁时被取消（`"wait"`，原因在 `cause` 里）。 |
 

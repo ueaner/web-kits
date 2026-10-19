@@ -6,6 +6,7 @@ export default defineConfig({
     "adapters/web": "src/adapters/web.ts",
     "adapters/tauri": "src/adapters/tauri.ts",
     "adapters/memory": "src/adapters/memory.ts",
+    "adapters/miniprogram": "src/adapters/miniprogram.ts",
     "react/index": "src/react/index.ts",
   },
   format: "esm",

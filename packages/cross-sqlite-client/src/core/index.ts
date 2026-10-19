@@ -71,6 +71,7 @@ export async function createDbClient(options: CreateDbClientOptions): Promise<Db
 }
 
 export { runMigrations, defaultExecutor } from "./migrate"
+export { transactionalExecutor } from "./transactional"
 export type {
   DbClient,
   DbConnection,
@@ -86,4 +87,12 @@ export type {
   DbStorage,
   MemoryFallbackReason,
 } from "./types"
-export { DbError, DbInitializationError, DbExecutionError, DbMigrationError, DbCloseError, DbTabLockError } from "./errors"
+export {
+  DbError,
+  DbInitializationError,
+  DbExecutionError,
+  DbMigrationError,
+  DbPersistenceError,
+  DbCloseError,
+  DbTabLockError,
+} from "./errors"

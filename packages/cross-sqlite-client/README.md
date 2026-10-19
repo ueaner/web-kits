@@ -181,11 +181,12 @@ Each `createXAdapter()` call returns a fresh, independent `DbAdapter` instance
 (no shared module-level state), so you can safely create more than one in the
 same process — e.g. in tests.
 
-| Subpath                               | Factory                      | Backing driver                                          | `singleConnection` |
-| ------------------------------------- | ---------------------------- | ------------------------------------------------------- | ------------------ |
-| `cross-sqlite-client/adapters/web`    | `createWebAdapter(options?)` | `@sqlite.org/sqlite-wasm` (Worker)                      | `true`             |
-| `cross-sqlite-client/adapters/tauri`  | `createTauriAdapter()`       | `@tauri-apps/plugin-sql`                                | `false`            |
-| `cross-sqlite-client/adapters/memory` | `createMemoryAdapter()`      | `@sqlite.org/sqlite-wasm` (Node/main-thread, in-memory) | `true`             |
+| Subpath                                    | Factory                             | Backing driver                                                                  | `singleConnection` |
+| ------------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------------- | ------------------ |
+| `cross-sqlite-client/adapters/web`         | `createWebAdapter(options?)`        | `@sqlite.org/sqlite-wasm` (Worker)                                              | `true`             |
+| `cross-sqlite-client/adapters/tauri`       | `createTauriAdapter()`              | `@tauri-apps/plugin-sql`                                                        | `false`            |
+| `cross-sqlite-client/adapters/memory`      | `createMemoryAdapter()`             | `@sqlite.org/sqlite-wasm` (Node/main-thread, in-memory)                         | `true`             |
+| `cross-sqlite-client/adapters/miniprogram` | `createMiniProgramAdapter(options)` | `@sqlite.org/sqlite-wasm` in memory + snapshots in the mini program's user data | `true`             |
 
 `singleConnection` says whether every `execute()`/`select()` call on that
 adapter is guaranteed to land on the same physical connection — see
@@ -204,6 +205,7 @@ for why that matters.
 **`createTauriAdapter()`** and **`createMemoryAdapter()`** take no options; their
 `initialize()` only checks the `signal` before starting.
 `createMemoryAdapter()` is meant for tests — see [Testing](#testing).
+**`createMiniProgramAdapter(options)`** — see [Mini program adapter](#mini-program-adapter).
 
 ### React (`cross-sqlite-client/react`)
 
@@ -394,8 +396,9 @@ interface MigrationOptions {
 ## Custom migration executors and `singleConnection`
 
 The default executor (`defaultExecutor`) runs each migration's statements via
-`executeBatch()`, with no transaction. `adapters/web` also exports a
-`transactionalExecutor` that wraps a migration in `BEGIN`/`COMMIT`/`ROLLBACK` —
+`executeBatch()`, with no transaction. The root entry also exports a
+`transactionalExecutor` that wraps a migration in `BEGIN`/`COMMIT`/`ROLLBACK`
+(`adapters/web` re-exports it for older imports) —
 but that's only safe on an adapter whose `singleConnection` is `true` (a real,
 single persistent connection). `@tauri-apps/plugin-sql`'s backend is a
 connection pool (`sqlx::Pool<Sqlite>`); separate `execute()` calls aren't
@@ -415,8 +418,7 @@ that just adds logging) doesn't need the marker and won't be rejected, even on
 a pooled-connection adapter.
 
 ```ts
-import { runMigrations } from "cross-sqlite-client"
-import { transactionalExecutor } from "cross-sqlite-client/adapters/web"
+import { runMigrations, transactionalExecutor } from "cross-sqlite-client"
 
 await runMigrations(client, APP_MIGRATIONS, { executor: transactionalExecutor })
 ```
@@ -498,6 +500,52 @@ also exported from `cross-sqlite-client/adapters/web`: it returns a
 the lock is taken, and throws `signal.reason` when a wait is cancelled. Use it
 for cross-tab coordination of something other than the database.
 
+## Mini program adapter
+
+`cross-sqlite-client/adapters/miniprogram` runs the same official `@sqlite.org/sqlite-wasm` engine as the
+web and memory adapters inside a WeChat mini program. The engine itself needs a mini-program build
+(shims for `WXWebAssembly`, cross-realm fixes, prebuilt callback stubs), which lives in a separate
+package, [`sqlite-wasm-miniprogram`](../sqlite-wasm-miniprogram); this adapter only takes care of persistence.
+
+```ts
+import { createDbClient, transactionalExecutor } from "cross-sqlite-client"
+import { createMiniProgramAdapter } from "cross-sqlite-client/adapters/miniprogram"
+import { initSqlite3 } from "sqlite-wasm-miniprogram"
+
+const adapter = createMiniProgramAdapter({
+  sqlite3: () => initSqlite3({ webAssembly: WXWebAssembly, assetsDir: "/sqlite" }),
+  fs: wx.getFileSystemManager(),
+  directory: `${wx.env.USER_DATA_PATH}/cross-sqlite-client`,
+})
+const client = await createDbClient({ name: "app", adapter, migrations, migrationOptions: { executor: transactionalExecutor } })
+```
+
+| Option      | Meaning                                                                                                                                                  |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sqlite3`   | Returns an initialized `sqlite3` object. Called on the first `initialize()`; if it rejects, `initialize()` rejects and can be retried.                   |
+| `fs`        | The host file system: `wx.getFileSystemManager()` (or `Taro.getFileSystemManager()`). Uses `mkdir`, `readFile`, `writeFile`, `rename`, `unlink`, `stat`. |
+| `directory` | Where the database files live, usually under `wx.env.USER_DATA_PATH` (shared 200 MB quota). Created if missing.                                          |
+| `logger`    | Diagnostics (restored from backup, corrupt file found). Defaults to `console`.                                                                           |
+
+How it stores data:
+
+- The database lives in memory. After a call, **if no transaction is open and the database changed**, it's exported
+  (`sqlite3_js_db_export`) and saved atomically to `<directory>/<name>.sqlite` — and the call resolves only after the
+  save. `execute()`/`executeBatch()` always save; `select()` saves only when it changed something (e.g. `INSERT … RETURNING`).
+  Open transactions are detected with `sqlite3_get_autocommit`, not by parsing SQL; a snapshot taken inside one would
+  contain uncommitted rows.
+- If saving fails, the in-memory database is restored from the last saved snapshot and `DbPersistenceError` is thrown:
+  memory never gets ahead of the disk, so retrying the same call really writes again.
+- Mini programs have no `fsync`, so a rename can survive a power loss that the new file's contents didn't. The previous
+  good version is kept as `<name>.sqlite.bak`; on open, the current file is checked (header + `PRAGMA quick_check`) and
+  the backup used if it's damaged. Damaged files are moved to `<name>.sqlite.corrupt-<time>`, **never deleted**; if both
+  are damaged, a new database is opened (and `logger.error` called) so the app isn't stuck.
+- There's no memory fallback: if the host can't provide what's needed, `initialize()` rejects. A file can be open once
+  per process (per `fs` object).
+- Use `transactionalExecutor` so a whole migration is saved once. Each save rewrites the whole file, which is fine for
+  small databases (≈ 120 KB for a few thousand rows); a VFS on the host's synchronous file APIs is the way forward
+  if databases grow large.
+
 ## Errors
 
 Every adapter throws one of these (all extend `DbError extends Error`, and all
@@ -509,6 +557,7 @@ accept an optional `cause`):
 | `DbInitializationError`                       | `adapter.initialize()` failed (worker/OPFS/Tauri-load failure, etc.).                                                                     |
 | `DbExecutionError` (has `.sql` and `.params`) | A `select()`/`execute()`/`executeBatch()` call failed.                                                                                    |
 | `DbMigrationError` (has `.version`)           | A migration failed; wraps the underlying error as `cause`. Thrown by `runMigrations`/`createDbClient`.                                    |
+| `DbPersistenceError`                          | (Mini program adapter only) SQL ran but the database couldn't be saved; the change was rolled back, so the call can be retried as is.     |
 | `DbCloseError`                                | `client.close()` failed.                                                                                                                  |
 | `DbTabLockError`                              | (Web adapter only) Another tab already holds the database (`"fail"`), or the wait for it was cancelled (`"wait"`, the reason in `cause`). |
 
@@ -557,7 +606,7 @@ format-clean.
 ## Known limitations
 
 - **Writes run through `select()` don't notify.** Route writes — `INSERT …
-RETURNING` included — through `execute()`; see [Write notifications](#write-notifications).
+  RETURNING` included — through `execute()`; see [Write notifications](#write-notifications).
 - **A hand-written transaction outside `groupWrites` can be read uncommitted
   by a listener.** See [Write notifications](#write-notifications).
 

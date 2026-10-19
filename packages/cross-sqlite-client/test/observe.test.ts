@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { createDbClient } from "../src/core/index"
-import { createMemoryAdapter } from "../src/adapters/memory"
+import { createTestAdapter, OPEN_STORAGE } from "./helpers/test-adapter"
 import type { Logger } from "../src/core/types"
 
 const MIGRATIONS = [{ version: 1, statements: ["CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT NOT NULL);"] }]
@@ -8,7 +8,7 @@ const MIGRATIONS = [{ version: 1, statements: ["CREATE TABLE items (id INTEGER P
 const silentLogger = () => ({ warn: vi.fn<Logger["warn"]>(), error: vi.fn<Logger["error"]>() })
 
 async function setup(logger: Logger = silentLogger()) {
-  const client = await createDbClient({ name: "test", adapter: createMemoryAdapter(), migrations: MIGRATIONS, logger })
+  const client = await createDbClient({ name: "test", adapter: createTestAdapter(), migrations: MIGRATIONS, logger })
   const listener = vi.fn()
   client.onWrite(listener)
   return { client, listener }
@@ -72,6 +72,34 @@ describe("onWrite", () => {
     expect(listener).toHaveBeenCalledTimes(1)
   })
 
+  it("merges writes started in the same task even when they finish at different times", async () => {
+    // 写入要等 IO 的适配器（web 的 worker 往返、miniprogram 的落盘）上，同一个任务里发起的写入会在不同时刻结束
+    const adapter = createTestAdapter()
+    const realInitialize = adapter.initialize.bind(adapter)
+    let delay = 0
+    adapter.initialize = async (config, options) => {
+      const connection = await realInitialize(config, options)
+      const realExecute = connection.execute.bind(connection)
+      connection.execute = async (sql, params) => {
+        const wait = (delay += 5)
+        const result = await realExecute(sql, params)
+        await new Promise((resolve) => setTimeout(resolve, wait))
+        return result
+      }
+      return connection
+    }
+    const client = await createDbClient({ name: "test", adapter, migrations: MIGRATIONS, logger: silentLogger() })
+    const listener = vi.fn()
+    client.onWrite(listener)
+    await Promise.all([
+      client.execute("INSERT INTO items (label) VALUES ('a');"),
+      client.execute("INSERT INTO items (label) VALUES ('b');"),
+      client.execute("INSERT INTO items (label) VALUES ('c');"),
+    ])
+    await settle()
+    expect(listener).toHaveBeenCalledTimes(1)
+  })
+
   it("notifies once per write when writes are awaited one after another", async () => {
     const { client, listener } = await setup()
     await client.execute("INSERT INTO items (label) VALUES ('a');")
@@ -124,7 +152,7 @@ describe("onWrite", () => {
 
   it("forwards storage as a getter (it changes on close)", async () => {
     const { client } = await setup()
-    expect(client.storage).toEqual({ persistent: false, reason: "memory-adapter" })
+    expect(client.storage).toEqual(OPEN_STORAGE)
     await client.close()
     expect(client.storage).toEqual({ persistent: false, reason: "not-initialized" })
   })

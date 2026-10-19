@@ -1,18 +1,18 @@
 import { describe, expect, it } from "vitest"
 import { createDbClient } from "../src/core/index"
-import { createMemoryAdapter } from "../src/adapters/memory"
+import { createTestAdapter, OPEN_STORAGE } from "./helpers/test-adapter"
 import { DbError, DbInitializationError } from "../src/core/errors"
 
 const MIGRATIONS = [{ version: 1, statements: ["CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT NOT NULL);"] }]
 
 async function createClient() {
-  return createDbClient({ name: "test", adapter: createMemoryAdapter(), migrations: MIGRATIONS })
+  return createDbClient({ name: "test", adapter: createTestAdapter(), migrations: MIGRATIONS })
 }
 
 describe("storage", () => {
-  it("is never persistent on the memory adapter", async () => {
+  it("reports the adapter's storage while open, not-initialized after close", async () => {
     const client = await createClient()
-    expect(client.storage).toEqual({ persistent: false, reason: "memory-adapter" })
+    expect(client.storage).toEqual(OPEN_STORAGE)
     await client.close()
     expect(client.storage).toEqual({ persistent: false, reason: "not-initialized" })
   })
@@ -53,7 +53,7 @@ describe("pragmas", () => {
   it("applies pragmas before migrations", async () => {
     const client = await createDbClient({
       name: "test",
-      adapter: createMemoryAdapter(),
+      adapter: createTestAdapter(),
       migrations: MIGRATIONS,
       pragmas: { foreign_keys: true },
     })
@@ -66,7 +66,7 @@ describe("pragmas", () => {
     await expect(
       createDbClient({
         name: "test",
-        adapter: createMemoryAdapter(),
+        adapter: createTestAdapter(),
         pragmas: { "foreign_keys; DROP TABLE items;--": 1 },
       }),
     ).rejects.toThrow(/PRAGMA name/)
@@ -76,7 +76,7 @@ describe("pragmas", () => {
     await expect(
       createDbClient({
         name: "test",
-        adapter: createMemoryAdapter(),
+        adapter: createTestAdapter(),
         pragmas: { journal_mode: "WAL; DROP TABLE items;--" },
       }),
     ).rejects.toThrow(/PRAGMA journal_mode/)
@@ -85,7 +85,7 @@ describe("pragmas", () => {
 
 describe("initialize concurrency", () => {
   it("returns the same client for concurrent initialize() calls", async () => {
-    const adapter = createMemoryAdapter()
+    const adapter = createTestAdapter()
     const [a, b] = await Promise.all([adapter.initialize({ name: "test" }), adapter.initialize({ name: "test" })])
     expect(a).toBe(b)
   })
@@ -93,7 +93,7 @@ describe("initialize concurrency", () => {
   it("shares one in-flight createDbClient setup across concurrent initialize() calls", async () => {
     // 迁移只应执行一次：若并发初始化各自跑了一遍完整流程，第二条 INSERT INTO schema_version
     // 会因 version 主键冲突而抛错
-    const adapter = createMemoryAdapter()
+    const adapter = createTestAdapter()
     const [client, connection] = await Promise.all([
       createDbClient({ name: "test", adapter, migrations: MIGRATIONS }),
       adapter.initialize({ name: "test" }),
@@ -106,7 +106,7 @@ describe("initialize concurrency", () => {
 
 describe("migration executor", () => {
   it("runs migration statements through executeBatch by default", async () => {
-    const adapter = createMemoryAdapter()
+    const adapter = createTestAdapter()
     let batchCalls = 0
     const realInitialize = adapter.initialize.bind(adapter)
     adapter.initialize = async (config) => {
@@ -134,7 +134,7 @@ describe("client lifecycle", () => {
   })
 
   it("re-opens a fresh working connection when initialize() is called after close()", async () => {
-    const adapter = createMemoryAdapter()
+    const adapter = createTestAdapter()
     const client = await adapter.initialize({ name: "test" })
     await client.close()
 
@@ -148,7 +148,7 @@ describe("signal", () => {
   it("passes createDbClient's signal to the adapter: an aborted one stops initialization", async () => {
     const controller = new AbortController()
     controller.abort(new Error("cancelled"))
-    const error = await createDbClient({ name: "test", adapter: createMemoryAdapter(), signal: controller.signal }).catch((e: unknown) => e)
+    const error = await createDbClient({ name: "test", adapter: createTestAdapter(), signal: controller.signal }).catch((e: unknown) => e)
     expect(error).toBeInstanceOf(DbInitializationError)
     expect((error as DbInitializationError).cause).toBe(controller.signal.reason)
   })

@@ -311,7 +311,7 @@ declare module "@sqlite.org/sqlite-wasm" {
 
   /**
    * Minimal subset of the real oo1.DB/Sqlite3Static surface, needed by
-   * adapters/memory.ts (single-thread Node/main-thread usage via the default
+   * adapters/memory.ts and adapters/miniprogram.ts (single-thread usage via the default
    * export, no Worker involved). This ambient `declare module` block replaces
    * — rather than merges with — the upstream package's own real types (see
    * the warning above sqlite3Worker1Promiser), so anything imported from this
@@ -323,6 +323,7 @@ declare module "@sqlite.org/sqlite-wasm" {
     pointer?: number
     exec(opts: { sql: string; bind?: TODO }): this
     selectObjects(sql: string, bind?: TODO): Record<string, TODO>[]
+    selectValue(sql: string, bind?: TODO): TODO
     changes(total?: boolean, sixtyFour?: boolean): number
     close(): void
   }
@@ -333,6 +334,16 @@ declare module "@sqlite.org/sqlite-wasm" {
     }
     capi: {
       sqlite3_last_insert_rowid: (db: number) => bigint
+      sqlite3_get_autocommit: (db: number) => number
+      /** 导出整个数据库（sqlite3_serialize 的封装），返回一份独立的拷贝 */
+      sqlite3_js_db_export: (db: number, schema?: string) => Uint8Array
+      sqlite3_deserialize: (db: number, schema: string, data: number, dbSize: number, bufferSize: number, flags: number) => number
+      SQLITE_DESERIALIZE_FREEONCLOSE: number
+      SQLITE_DESERIALIZE_RESIZEABLE: number
+    }
+    wasm: {
+      /** 用 sqlite3_malloc 分配内存并拷入数据，返回指针 */
+      allocFromTypedArray: (data: Uint8Array) => number
     }
   }
 

@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest"
 import { createDbClient } from "../src/core/index"
 import { runMigrations } from "../src/core/migrate"
-import { createMemoryAdapter } from "../src/adapters/memory"
+import { createTestAdapter } from "./helpers/test-adapter"
 import { transactionalExecutor } from "../src/adapters/web"
 import { DbError, DbExecutionError, DbMigrationError } from "../src/core/errors"
 
 describe("runMigrations", () => {
   it("applies pending migrations in order", async () => {
-    const client = await createMemoryAdapter().initialize({ name: "test" })
+    const client = await createTestAdapter().initialize({ name: "test" })
     await runMigrations(client, [
       { version: 1, statements: ["CREATE TABLE t (id INTEGER PRIMARY KEY);"] },
       { version: 2, statements: ["ALTER TABLE t ADD COLUMN name TEXT;"] },
@@ -17,7 +17,7 @@ describe("runMigrations", () => {
   })
 
   it("does not re-apply already-applied migrations", async () => {
-    const client = await createMemoryAdapter().initialize({ name: "test" })
+    const client = await createTestAdapter().initialize({ name: "test" })
     const migrations = [{ version: 1, statements: ["CREATE TABLE t (id INTEGER PRIMARY KEY);"] }]
 
     await runMigrations(client, migrations)
@@ -29,7 +29,7 @@ describe("runMigrations", () => {
   })
 
   it("supports a custom transactional executor on a single-connection adapter", async () => {
-    const client = await createMemoryAdapter().initialize({ name: "test" })
+    const client = await createTestAdapter().initialize({ name: "test" })
     await runMigrations(client, [{ version: 1, statements: ["CREATE TABLE t (id INTEGER PRIMARY KEY);"] }], {
       executor: transactionalExecutor,
     })
@@ -40,7 +40,7 @@ describe("runMigrations", () => {
 
 describe("createDbClient", () => {
   it("rejects a non-default executor on an adapter that is not singleConnection", async () => {
-    const adapter = createMemoryAdapter()
+    const adapter = createTestAdapter()
     adapter.singleConnection = false // simulate a pooled-connection adapter
 
     await expect(
@@ -54,7 +54,7 @@ describe("createDbClient", () => {
   })
 
   it("allows a non-transactional custom executor on an adapter that is not singleConnection", async () => {
-    const adapter = createMemoryAdapter()
+    const adapter = createTestAdapter()
     adapter.singleConnection = false // simulate a pooled-connection adapter
     const calls: number[] = []
     const loggingExecutor: import("../src/core/types").MigrationExecutor = async (db, migration, recordVersion) => {
@@ -81,7 +81,7 @@ describe("createDbClient", () => {
     await expect(
       createDbClient({
         name: "test",
-        adapter: createMemoryAdapter(),
+        adapter: createTestAdapter(),
         migrations: [{ version: 0, statements: ["CREATE TABLE t (id INTEGER PRIMARY KEY);"] }],
       }),
     ).rejects.toThrow(/positive integer/)
@@ -91,7 +91,7 @@ describe("createDbClient", () => {
     await expect(
       createDbClient({
         name: "test",
-        adapter: createMemoryAdapter(),
+        adapter: createTestAdapter(),
         migrations: [{ version: 1.5, statements: ["CREATE TABLE t (id INTEGER PRIMARY KEY);"] }],
       }),
     ).rejects.toThrow(/positive integer/)
@@ -101,7 +101,7 @@ describe("createDbClient", () => {
     await expect(
       createDbClient({
         name: "test",
-        adapter: createMemoryAdapter(),
+        adapter: createTestAdapter(),
         migrations: [
           { version: 1, statements: ["CREATE TABLE t (id INTEGER PRIMARY KEY);"] },
           { version: 1, statements: ["CREATE TABLE u (id INTEGER PRIMARY KEY);"] },
@@ -111,7 +111,7 @@ describe("createDbClient", () => {
   })
 
   it("rejects an invalid migration tableName", async () => {
-    const client = await createMemoryAdapter().initialize({ name: "test" })
+    const client = await createTestAdapter().initialize({ name: "test" })
     await expect(
       runMigrations(client, [{ version: 1, statements: ["CREATE TABLE t (id INTEGER PRIMARY KEY);"] }], {
         tableName: "schema_version; DROP TABLE t;--",
@@ -122,7 +122,7 @@ describe("createDbClient", () => {
   it("wraps a failing migration in DbMigrationError carrying the version", async () => {
     const error = await createDbClient({
       name: "test",
-      adapter: createMemoryAdapter(),
+      adapter: createTestAdapter(),
       migrations: [
         { version: 1, statements: ["CREATE TABLE t (id INTEGER PRIMARY KEY);"] },
         { version: 2, statements: ["SELECT * FROM no_such_table;"] },
@@ -134,7 +134,7 @@ describe("createDbClient", () => {
   })
 
   it("closes the client when migrations fail, so no connection/lock leaks", async () => {
-    const adapter = createMemoryAdapter()
+    const adapter = createTestAdapter()
     let closeCalls = 0
     const realInitialize = adapter.initialize.bind(adapter)
     adapter.initialize = async (config) => {
@@ -158,7 +158,7 @@ describe("createDbClient", () => {
   })
 
   it("warns when the database is newer than the provided migrations", async () => {
-    const client = await createMemoryAdapter().initialize({ name: "test" })
+    const client = await createTestAdapter().initialize({ name: "test" })
     await runMigrations(client, [
       { version: 1, statements: ["CREATE TABLE t (id INTEGER PRIMARY KEY);"] },
       { version: 2, statements: ["ALTER TABLE t ADD COLUMN name TEXT;"] },
@@ -182,7 +182,7 @@ describe("createDbClient", () => {
   })
 
   it("warns about provided-but-never-applied migrations below the current version (holes)", async () => {
-    const client = await createMemoryAdapter().initialize({ name: "test" })
+    const client = await createTestAdapter().initialize({ name: "test" })
     // 旧包只发布了 [1, 2, 5]，新包补发了 3、4 —— 3 和 4 低于当前版本且从未应用
     await runMigrations(client, [
       { version: 1, statements: ["CREATE TABLE t (id INTEGER PRIMARY KEY);"] },
@@ -214,7 +214,7 @@ describe("createDbClient", () => {
   it("initializes a client and applies migrations end to end", async () => {
     const client = await createDbClient({
       name: "test",
-      adapter: createMemoryAdapter(),
+      adapter: createTestAdapter(),
       migrations: [{ version: 1, statements: ["CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT NOT NULL);"] }],
     })
 
@@ -229,7 +229,7 @@ describe("createDbClient", () => {
 
 describe("errors", () => {
   it("throws DbExecutionError (not a plain Error) for a bad SQL statement", async () => {
-    const client = await createMemoryAdapter().initialize({ name: "test" })
+    const client = await createTestAdapter().initialize({ name: "test" })
     const badSql = "SELECT * FROM this_table_does_not_exist;"
 
     const error = await client.select(badSql).catch((e: unknown) => e)
@@ -238,7 +238,7 @@ describe("errors", () => {
   })
 
   it("throws DbError (not a plain Error) when using a client after close()", async () => {
-    const adapter = createMemoryAdapter()
+    const adapter = createTestAdapter()
     const client = await adapter.initialize({ name: "test" })
     await client.close()
 

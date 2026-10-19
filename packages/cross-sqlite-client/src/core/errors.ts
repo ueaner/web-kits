@@ -43,6 +43,18 @@ export class DbMigrationError extends DbError {
   }
 }
 
+/**
+ * SQL 已经执行，但没能写进持久化存储。目前只有 miniprogram 适配器会抛出：它在落盘失败时
+ * 把内存里的数据库恢复到上一次成功保存的状态，所以这次调用的改动等于没有发生，调用方可以
+ * 原样重试（带去重键的写入重试时会真正重新写一次，不会被当成"已经记过"）。cause 是宿主返回的错误。
+ */
+export class DbPersistenceError extends DbError {
+  constructor(cause?: unknown) {
+    super("SQL executed but the database could not be persisted; the change was rolled back", cause)
+    this.name = "DbPersistenceError"
+  }
+}
+
 export class DbCloseError extends DbError {
   constructor(cause?: unknown) {
     super("Failed to close database", cause)
