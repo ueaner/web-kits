@@ -58,10 +58,10 @@
   "devDependencies": {
     "@types/node": "^26.6.5",
     "cross-sqlite-client": "workspace:*",
-    "esbuild": "0.25.10",
+    "esbuild": "0.28.2",
     "miniprogram-automator": "^0.13.0",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.2"
+    "vitest": "^5.0.5"
   },
   "engines": {
     "node": ">=24"
