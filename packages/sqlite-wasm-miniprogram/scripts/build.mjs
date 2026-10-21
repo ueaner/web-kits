@@ -1,6 +1,6 @@
 // 构建 sqlite-wasm-miniprogram：
 //   1. 用 esbuild 把 src/index.ts 连同官方 glue（@sqlite.org/sqlite-wasm 的 dist/index.mjs）打成 dist/index.js（只发 ESM），
-//      inject src/shims.ts，替换 glue 里的自由变量 URL / URLSearchParams / WebAssembly；
+//      inject src/shims.ts，替换 glue 里的自由变量 URL / URLSearchParams / WebAssembly / TextEncoder / TextDecoder；
 //   2. 在 Node 里跑原版 glue，拦截 WebAssembly.Module(bytes)，采集 jsFuncToWasm 现场拼的回调桩模块，
 //      存成 dist/assets/stubs/<hex>.wasm（采集负载 + glue 源码里能静态找到的签名字面量）；
 //   3. 复制 sqlite3.wasm，生成 brotli 压缩的 sqlite3.wasm.br，写 dist/assets/manifest.json；

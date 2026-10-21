@@ -17,11 +17,11 @@
 
 官方 glue 不能原样在小程序里运行：
 
-| 小程序的限制                                                                                                                | 这份构建的处理                                                                                        |
-| --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| 没有全局 `WebAssembly`，只有 `WXWebAssembly`；没有 `URL` / `URLSearchParams`                                                | **打包时注入**垫片（esbuild 的 `inject`）：每个模块都被包了一层，运行时往全局挂的东西模块里看不到     |
-| `WXWebAssembly` 的实例来自另一个 realm：导出的函数过不了 `instanceof Function`，函数表抛的错误过不了 `instanceof TypeError` | 导出函数改用本 realm 的 `Function.prototype`；函数表、内存抛的错误换成本 realm 的同类错误             |
-| `WXWebAssembly.instantiate` / `Module` **只接受包内的 `.wasm` / `.wasm.br` 路径**，不接受字节                               | glue 给 JS 回调现场拼的小 wasm 模块，预先生成成 `stubs/<十六进制内容>.wasm`，运行时按内容找到对应文件 |
+| 小程序的限制                                                                                                                               | 这份构建的处理                                                                                                                                                 |
+| ------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 没有全局 `WebAssembly`，只有 `WXWebAssembly`；没有 `URL` / `URLSearchParams`；真机上也没有 `TextEncoder` / `TextDecoder`（开发者工具里有） | **打包时注入**垫片（esbuild 的 `inject`）：每个模块都被包了一层，运行时往全局挂的东西模块里看不到。文本编解码有原生实现就用原生的，没有时用纯 JS 的 UTF-8 实现 |
+| `WXWebAssembly` 的实例来自另一个 realm：导出的函数过不了 `instanceof Function`，函数表抛的错误过不了 `instanceof TypeError`                | 导出函数改用本 realm 的 `Function.prototype`；函数表、内存抛的错误换成本 realm 的同类错误                                                                      |
+| `WXWebAssembly.instantiate` / `Module` **只接受包内的 `.wasm` / `.wasm.br` 路径**，不接受字节                                              | glue 给 JS 回调现场拼的小 wasm 模块，预先生成成 `stubs/<十六进制内容>.wasm`，运行时按内容找到对应文件                                                          |
 
 ## 安装
 
@@ -83,7 +83,7 @@ const client = await createDbClient({ name: "app", adapter, migrations, migratio
   glue 初始化时设置的全部回调、`cross-sqlite-client` 用到的能力，以及 glue 源码里能找到的全部签名字面量（共 13 个桩模块）。
   清单以外的签名会抛出 `missing prebuilt callback stub …`；要用回调类 API 之前，先看 `manifest.json` 里的 `stubs`。
 - **没有 OPFS / Worker**：小程序里没有持久化的 VFS。持久化靠导出整个数据库（`cross-sqlite-client` 的适配器就是这样做的）。
-- 已在微信开发者工具模拟器里验证。**iOS、Android 真机还没验证。**
+- 已在微信开发者工具模拟器和一台 Android 真机（Android 14、微信 8.0.79、基础库 3.17.4）上验证：打开、写入、退出后重新进入能读回数据。**iOS 真机还没验证。**
 
 ## 测试
 

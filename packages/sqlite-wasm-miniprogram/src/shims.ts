@@ -1,8 +1,9 @@
 // 注入 sqlite-wasm glue 的垫片：scripts/build.mjs 用 esbuild 的 inject 把 glue 里的自由变量
-// URL / URLSearchParams / WebAssembly 换成这里的导出。小程序把每个模块包在函数里，往 globalThis 上
-// 挂东西，模块里的自由变量看不到，所以只能在打包时替换。
+// URL / URLSearchParams / WebAssembly / TextEncoder / TextDecoder 换成这里的导出。小程序把每个模块包在函数里，
+// 往 globalThis 上挂东西，模块里的自由变量看不到，所以只能在打包时替换。
 //
-// 这个文件里不要写自由变量 WebAssembly / URL / URLSearchParams：它自己也会被 inject 处理。
+// 这个文件里不要写自由变量 WebAssembly / URL / URLSearchParams / TextEncoder / TextDecoder：它自己也会被 inject 处理
+// （要用原生实现时写 globalThis.TextDecoder）。
 
 /** 小程序的 WebAssembly 运行时（WXWebAssembly）：instantiate / Module 只接受包内的 .wasm / .wasm.br 路径 */
 export interface MiniProgramWebAssembly {
@@ -158,4 +159,146 @@ class ShimURL {
   }
 }
 
-export { ShimWebAssembly as WebAssembly, ShimURL as URL, ShimURLSearchParams as URLSearchParams }
+/** UTF-8 编码。glue 用 TextEncoder 把 SQL、绑定参数等 JS 字符串写进 wasm 内存 */
+export function utf8Encode(input: string): Uint8Array {
+  const out = new Uint8Array(input.length * 3)
+  let n = 0
+  for (let i = 0; i < input.length; i++) {
+    let c = input.charCodeAt(i)
+    if (c >= 0xd800 && c <= 0xdbff && i + 1 < input.length) {
+      const d = input.charCodeAt(i + 1)
+      if (d >= 0xdc00 && d <= 0xdfff) {
+        c = 0x10000 + ((c - 0xd800) << 10) + (d - 0xdc00)
+        i++
+      } else c = 0xfffd
+    } else if (c >= 0xd800 && c <= 0xdfff) c = 0xfffd
+    if (c < 0x80) out[n++] = c
+    else if (c < 0x800) {
+      out[n++] = 0xc0 | (c >> 6)
+      out[n++] = 0x80 | (c & 63)
+    } else if (c < 0x10000) {
+      out[n++] = 0xe0 | (c >> 12)
+      out[n++] = 0x80 | ((c >> 6) & 63)
+      out[n++] = 0x80 | (c & 63)
+    } else {
+      out[n++] = 0xf0 | (c >> 18)
+      out[n++] = 0x80 | ((c >> 12) & 63)
+      out[n++] = 0x80 | ((c >> 6) & 63)
+      out[n++] = 0x80 | (c & 63)
+    }
+  }
+  return out.slice(0, n)
+}
+
+/**
+ * UTF-8 解码，按 WHATWG Encoding 标准的解码算法：每段不合法的字节序列（最长的不合法前缀）换成一个 U+FFFD，
+ * 和原生 TextDecoder 的结果逐字一致。glue 用它把 wasm 内存里的结果读成 JS 字符串
+ */
+export function utf8Decode(bytes: Uint8Array): string {
+  let out = ""
+  const chunk: number[] = []
+  const emit = (cp: number) => {
+    if (cp > 0xffff) {
+      cp -= 0x10000
+      chunk.push(0xd800 + (cp >> 10), 0xdc00 + (cp & 1023))
+    } else chunk.push(cp)
+    if (chunk.length >= 8192) {
+      out += String.fromCharCode(...chunk)
+      chunk.length = 0
+    }
+  }
+  let needed = 0
+  let seen = 0
+  let cp = 0
+  let lower = 0x80
+  let upper = 0xbf
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i]!
+    if (needed === 0) {
+      if (b <= 0x7f) emit(b)
+      else if (b >= 0xc2 && b <= 0xdf) {
+        needed = 1
+        cp = b & 0x1f
+      } else if (b >= 0xe0 && b <= 0xef) {
+        if (b === 0xe0) lower = 0xa0
+        if (b === 0xed) upper = 0x9f
+        needed = 2
+        cp = b & 0xf
+      } else if (b >= 0xf0 && b <= 0xf4) {
+        if (b === 0xf0) lower = 0x90
+        if (b === 0xf4) upper = 0x8f
+        needed = 3
+        cp = b & 0x7
+      } else emit(0xfffd)
+      continue
+    }
+    if (b < lower || b > upper) {
+      // 这段序列不完整：换成一个 U+FFFD，当前字节重新当作开头处理
+      needed = seen = cp = 0
+      lower = 0x80
+      upper = 0xbf
+      emit(0xfffd)
+      i--
+      continue
+    }
+    lower = 0x80
+    upper = 0xbf
+    cp = (cp << 6) | (b & 0x3f)
+    if (++seen === needed) {
+      emit(cp)
+      needed = seen = cp = 0
+    }
+  }
+  if (needed !== 0) emit(0xfffd)
+  return out + String.fromCharCode(...chunk)
+}
+
+const toBytes = (input?: ArrayBuffer | ArrayBufferView): Uint8Array =>
+  !input
+    ? new Uint8Array(0)
+    : input instanceof ArrayBuffer
+      ? new Uint8Array(input)
+      : new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
+
+const isUtf8 = (label: string) => /^\s*(unicode-1-1-)?utf-?8\s*$/i.test(label)
+
+/**
+ * 真机上的小程序 / 小游戏没有 TextEncoder / TextDecoder（开发者工具里有，所以模拟器里看不出来）。
+ * 有原生实现就用原生的，没有才用上面的纯 JS 实现；只支持 UTF-8，glue 也只用 UTF-8
+ */
+class ShimTextEncoder {
+  readonly encoding = "utf-8"
+  readonly #native = (globalThis as { TextEncoder?: new () => { encode(s: string): Uint8Array } }).TextEncoder
+  #impl = this.#native ? new this.#native() : null
+  encode(input = ""): Uint8Array {
+    return this.#impl ? this.#impl.encode(input) : utf8Encode(input)
+  }
+  encodeInto(input: string, dest: Uint8Array): { read: number; written: number } {
+    const bytes = this.encode(input)
+    if (bytes.length > dest.length) throw new RangeError("[sqlite-wasm-miniprogram] encodeInto: destination too small")
+    dest.set(bytes)
+    return { read: input.length, written: bytes.length }
+  }
+}
+
+class ShimTextDecoder {
+  readonly encoding = "utf-8"
+  #impl: { decode(input?: ArrayBufferView): string } | null
+  constructor(label = "utf-8") {
+    if (!isUtf8(label)) throw new RangeError(`[sqlite-wasm-miniprogram] TextDecoder: only utf-8 is supported, got "${label}"`)
+    const Native = (globalThis as { TextDecoder?: new (label?: string) => { decode(input?: ArrayBufferView): string } }).TextDecoder
+    this.#impl = Native ? new Native("utf-8") : null
+  }
+  decode(input?: ArrayBuffer | ArrayBufferView): string {
+    const bytes = toBytes(input)
+    return this.#impl ? this.#impl.decode(bytes) : utf8Decode(bytes)
+  }
+}
+
+export {
+  ShimWebAssembly as WebAssembly,
+  ShimURL as URL,
+  ShimURLSearchParams as URLSearchParams,
+  ShimTextEncoder as TextEncoder,
+  ShimTextDecoder as TextDecoder,
+}
