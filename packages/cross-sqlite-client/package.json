@@ -1,6 +1,6 @@
 {
   "name": "cross-sqlite-client",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Cross-platform (Web + Tauri + WeChat mini program) SQLite client with a shared migration framework and React bindings.",
   "keywords": [
     "migration",
