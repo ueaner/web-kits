@@ -18,7 +18,9 @@ export type BatchStatement = string | { sql: string; params?: unknown[] }
  * - "not-cross-origin-isolated"：页面没有跨源隔离（缺 COOP/COEP 响应头，常见于代理或托管方去掉了它们），
  *   sqlite-wasm 的 opfs VFS 用不了；
  * - "opfs-unavailable"：OPFS 探测失败（私有模式、配额、权限）；
- * - "open-failed"：探测通过，但 opfs VFS 打开数据库文件失败。
+ * - "open-failed"：探测通过，但 opfs VFS 打开数据库文件失败；
+ * - "open-timeout"：探测通过，但打开数据库文件在 timeoutMs 内一直没有回复（OPFS 代理 Worker 卡住，比如 Playwright 的
+ *   WebKit 里 Atomics.waitAsync 不落定），web 适配器结束卡住的 Worker、换一个新的打开内存库。
  */
 export type MemoryFallbackReason =
   | "not-initialized"
@@ -27,6 +29,7 @@ export type MemoryFallbackReason =
   | "not-cross-origin-isolated"
   | "opfs-unavailable"
   | "open-failed"
+  | "open-timeout"
 
 /** 数据实际存在哪里。web 适配器在 OPFS 不可用、并且 fallbackToMemory 为 true 时会退回内存 */
 export type DbStorage =

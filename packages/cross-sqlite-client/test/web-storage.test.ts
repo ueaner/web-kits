@@ -1,19 +1,27 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 // 用假的 sqlite-wasm promiser 驱动 web 适配器：只关心它最后打开了哪个文件、client.storage 报告了什么。
-// opened 记下每次 open 的 filename；failOpfsOpen 让 opfs 文件的 open 失败（探测通过、打开失败的情况）
+// opened 记下每次 open 的 filename；failOpfsOpen 让 opfs 文件的 open 失败（探测通过、打开失败的情况），
+// hangOpfsOpen 让它永远不回复（OPFS 代理卡住的情况）；promisers 数一共建了几个 promiser（每个对应一个 Worker）
 const opened: string[] = []
 let failOpfsOpen = false
+let hangOpfsOpen = false
+let promisers = 0
 vi.mock("@sqlite.org/sqlite-wasm", () => {
   const promiser = async (type: string, args: { filename?: string }) => {
     if (type === "open") {
       opened.push(args.filename!)
       if (failOpfsOpen && args.filename!.includes("vfs=opfs")) throw { type: "error", result: { message: "SQLITE_CANTOPEN" } }
+      if (hangOpfsOpen && args.filename!.includes("vfs=opfs")) return new Promise(() => {})
       return { dbId: opened.length }
     }
     return { result: { resultRows: [] } }
   }
-  return { sqlite3Worker1Promiser: Object.assign(async () => promiser, { defaultConfig: undefined }), default: undefined }
+  const start = async () => {
+    promisers++
+    return promiser
+  }
+  return { sqlite3Worker1Promiser: Object.assign(start, { defaultConfig: undefined }), default: undefined }
 })
 
 const { createWebAdapter } = await import("../src/adapters/web")
@@ -35,6 +43,8 @@ afterEach(() => {
   vi.unstubAllGlobals()
   opened.length = 0
   failOpfsOpen = false
+  hangOpfsOpen = false
+  promisers = 0
 })
 
 describe("web adapter: client.storage", () => {
@@ -56,6 +66,34 @@ describe("web adapter: client.storage", () => {
     failOpfsOpen = true
     expect((await open()).storage).toEqual({ persistent: false, reason: "open-failed" })
     expect(opened.at(-1)).toBe(":memory:")
+  })
+
+  it("falls back to memory in a new worker when opening the OPFS file never answers", async () => {
+    browser()
+    hangOpfsOpen = true
+    const warnings: unknown[][] = []
+    const client = await createWebAdapter({
+      singleTabLock: "off",
+      timeoutMs: 20,
+      logger: { ...silent, warn: (...a) => void warnings.push(a) },
+    }).initialize({
+      name: "app",
+    })
+    expect(client.storage).toEqual({ persistent: false, reason: "open-timeout" })
+    expect(opened).toEqual(["file:app.db?vfs=opfs", ":memory:"])
+    // 卡住的 Worker 处理不了消息了：内存库在第二个 Worker 里开
+    expect(promisers).toBe(2)
+    expect(String(warnings[0]?.[0])).toMatch(/timed out/)
+  })
+
+  it("rejects when opening the OPFS file never answers and fallbackToMemory is false", async () => {
+    browser()
+    hangOpfsOpen = true
+    const error = await createWebAdapter({ singleTabLock: "off", fallbackToMemory: false, timeoutMs: 20, logger: silent })
+      .initialize({ name: "app" })
+      .catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(DbInitializationError)
+    expect(((error as Error).cause as Error).message).toMatch(/Timed out after 20ms opening file:app.db/)
   })
 
   it("updates after the client is closed and opened again", async () => {

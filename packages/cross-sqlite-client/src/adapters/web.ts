@@ -14,7 +14,10 @@ import { sqlite3Worker1Promiser } from "@sqlite.org/sqlite-wasm"
 import type { Promiser, DbId, PromiserResponseError, PromiserResponseSuccess } from "@sqlite.org/sqlite-wasm"
 
 export interface WebAdapterOptions {
-  /** 等待 Worker 就绪的超时时间（毫秒），超时后 initialize() 会 reject 而不是永远 pending */
+  /**
+   * 等待 Worker 就绪、以及打开数据库文件的超时时间（毫秒），各算各的。Worker 就绪超时时 initialize() 会 reject，
+   * 而不是永远 pending；打开 OPFS 文件超时时按 fallbackToMemory 退回内存（reason 是 "open-timeout"）或 reject
+   */
   timeoutMs?: number
   /**
    * OPFS 不可用（不支持/未跨域隔离/探测或打开失败）时是否退化为内存模式，默认 true。退化后
@@ -48,6 +51,11 @@ export interface WebAdapterOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 15000
+
+/** 等 Worker 就绪或等它打开数据库超时（区分"打开失败"和"打开一直没有回复"） */
+class OpenTimeoutError extends Error {
+  override name = "OpenTimeoutError"
+}
 
 /**
  * promiser 的错误以 reject 形式出现，且 rejection 值是 {type:"error", result:{message,...}}
@@ -269,8 +277,45 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
     }
   }
 
+  /** 新建 Worker 和它的 promiser，等它就绪；超时 reject */
+  async function startPromiser(): Promise<Promiser> {
+    // 注意：库自身的 onerror 只是诊断日志钩子（用于"未处理的 worker 消息"等情况），并不会
+    // reject 这个 Promise —— 如果 Worker 脚本本身加载失败（404、网络错误等），既不会触发
+    // onerror 也不会触发 onready，Promise 会永远 pending。因此这里用超时兜底。
+    worker = createWorker() ?? null
+    const readyPromise = sqlite3Worker1Promiser({
+      worker: worker ?? undefined,
+      onerror: (...args) => logger.error("[Web DB] sqlite3Worker1Promiser error:", ...args),
+    })
+    return withTimeout(
+      readyPromise,
+      `[Web DB] Timed out after ${timeoutMs}ms waiting for the SQLite worker to become ready (it may have failed to load).`,
+    )
+  }
+
+  /**
+   * promise 在 timeoutMs 内没有落定就以 OpenTimeoutError reject（promise 本身不会被取消）。
+   * 打开 OPFS 文件也要它：opfs VFS 的每个文件操作都让 sqlite 的 Worker 同步阻塞（Atomics.wait），等 OPFS 代理 Worker
+   * 做完再唤醒它；代理那边卡住时（Playwright 的 WebKit 里 Atomics.waitAsync 的 promise 永远不落定，代理再也不处理
+   * 新操作），"open" 永远没有回复，initialize() 就会既不成功也不失败地一直挂着，连退回内存的告警都没有
+   */
+  async function withTimeout<T>(promise: Promise<T>, message: string): Promise<T> {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new OpenTimeoutError(message)), timeoutMs)
+    })
+    try {
+      return await Promise.race([promise, timeout])
+    } finally {
+      clearTimeout(timeoutId)
+    }
+  }
+
   async function openDatabase(p: Promiser, filename: string): Promise<DbId> {
-    const openResponse = await p("open", { filename })
+    const openResponse = await withTimeout(
+      p("open", { filename }),
+      `[Web DB] Timed out after ${timeoutMs}ms opening ${filename} (the SQLite worker never answered).`,
+    )
     if (openResponse.dbId === undefined) {
       throw new DbInitializationError(
         new Error("Database opened successfully but dbId is undefined. This indicates an unexpected library behavior."),
@@ -334,32 +379,7 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
     }
 
     try {
-      // 注意：库自身的 onerror 只是诊断日志钩子（用于"未处理的 worker 消息"等情况），并不会
-      // reject 这个 Promise —— 如果 Worker 脚本本身加载失败（404、网络错误等），既不会触发
-      // onerror 也不会触发 onready，Promise 会永远 pending。因此这里用超时兜底。
-      worker = createWorker() ?? null
-      const readyPromise = sqlite3Worker1Promiser({
-        worker: worker ?? undefined,
-        onerror: (...args) => logger.error("[Web DB] sqlite3Worker1Promiser error:", ...args),
-      })
-      let rejectTimeout!: (error: Error) => void
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        rejectTimeout = reject
-      })
-      const timeoutId = setTimeout(
-        () =>
-          rejectTimeout(
-            new Error(
-              `[Web DB] Timed out after ${timeoutMs}ms waiting for the SQLite worker to become ready (it may have failed to load).`,
-            ),
-          ),
-        timeoutMs,
-      )
-      try {
-        promiser = await Promise.race([readyPromise, timeoutPromise])
-      } finally {
-        clearTimeout(timeoutId)
-      }
+      promiser = await startPromiser()
 
       try {
         currentDbId = await openDatabase(promiser, filename)
@@ -367,10 +387,21 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
         // 探测通过不代表 opfs VFS 真能打开（SAH pool、配额、私有模式的怪异行为）——
         // fallbackToMemory 也覆盖这一阶段
         if (filename !== ":memory:" && fallbackToMemory) {
-          logger.warn("[Web DB] Failed to open the OPFS database. Falling back to in-memory mode.", promiserErrorCause(openError))
+          const timedOut = openError instanceof OpenTimeoutError
+          logger.warn(
+            timedOut
+              ? "[Web DB] Opening the OPFS database timed out. Falling back to in-memory mode."
+              : "[Web DB] Failed to open the OPFS database. Falling back to in-memory mode.",
+            promiserErrorCause(openError),
+          )
+          if (timedOut) {
+            // 卡住的 Worker 阻塞在 OPFS 操作里，再也处理不了消息：结束它（它的 OPFS 代理 Worker 随之结束），换一个新的开内存库
+            worker?.terminate()
+            promiser = await startPromiser()
+          }
           currentDbId = await openDatabase(promiser, ":memory:")
           filename = ":memory:"
-          fallback = "open-failed"
+          fallback = timedOut ? "open-timeout" : "open-failed"
           // :memory: 不需要跨标签页协调：放掉为 OPFS 文件拿的锁，不然这个标签页会一直挡着别的标签页打开 OPFS
           releaseTabLock?.()
           releaseTabLock = null

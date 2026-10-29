@@ -195,12 +195,12 @@ for why that matters.
 
 **`createWebAdapter(options?)`:**
 
-| Option             | Default   | Meaning                                                                                                                                                                                                         |
-| ------------------ | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `timeoutMs`        | `15000`   | How long to wait for the SQLite worker to become ready before `initialize()` rejects. Without this, a failed worker-script load would leave `initialize()` pending forever.                                     |
-| `fallbackToMemory` | `true`    | Whether to silently use `:memory:` when OPFS isn't available — including when the OPFS probe passes but opening the file fails — instead of throwing. See [COOP/COEP](#coopcoep-required-for-opfs-persistence). |
-| `singleTabLock`    | `"fail"`  | What to do when another tab already has the same OPFS file open: `"fail"` rejects right away, `"wait"` queues, `"off"` doesn't coordinate. See [Multi-tab coordination](#multi-tab-coordination).               |
-| `logger`           | `console` | Where diagnostics go (OPFS-fallback warnings, worker errors). Pass your own `{ warn, error }` to route them into your logging/telemetry.                                                                        |
+| Option             | Default   | Meaning                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------ | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `timeoutMs`        | `15000`   | How long to wait for the SQLite worker to become ready, and separately for it to open the database file. Without it, a failed worker-script load or an OPFS proxy that stops answering would leave `initialize()` pending forever. A ready timeout rejects; an OPFS open timeout falls back to memory (`reason: "open-timeout"`) or, with `fallbackToMemory: false`, rejects. |
+| `fallbackToMemory` | `true`    | Whether to silently use `:memory:` when OPFS isn't available — including when the OPFS probe passes but opening the file fails — instead of throwing. See [COOP/COEP](#coopcoep-required-for-opfs-persistence).                                                                                                                                                               |
+| `singleTabLock`    | `"fail"`  | What to do when another tab already has the same OPFS file open: `"fail"` rejects right away, `"wait"` queues, `"off"` doesn't coordinate. See [Multi-tab coordination](#multi-tab-coordination).                                                                                                                                                                             |
+| `logger`           | `console` | Where diagnostics go (OPFS-fallback warnings, worker errors). Pass your own `{ warn, error }` to route them into your logging/telemetry.                                                                                                                                                                                                                                      |
 
 **`createTauriAdapter()`** and **`createMemoryAdapter()`** take no options; their
 `initialize()` only checks the `signal` before starting.
@@ -444,7 +444,7 @@ loudly than run in-memory unexpectedly, or keep the fallback and check
 ```ts
 const client = await createDbClient({ name: "my-app", adapter: createWebAdapter(), migrations })
 if (!client.storage.persistent) {
-  // "not-cross-origin-isolated" | "opfs-unsupported" | "opfs-unavailable" | "open-failed"
+  // "not-cross-origin-isolated" | "opfs-unsupported" | "opfs-unavailable" | "open-failed" | "open-timeout"
   showBanner(`Your progress won't be saved (${client.storage.reason})`)
 }
 ```
@@ -606,7 +606,7 @@ format-clean.
 ## Known limitations
 
 - **Writes run through `select()` don't notify.** Route writes — `INSERT …
-RETURNING` included — through `execute()`; see [Write notifications](#write-notifications).
+  RETURNING` included — through `execute()`; see [Write notifications](#write-notifications).
 - **A hand-written transaction outside `groupWrites` can be read uncommitted
   by a listener.** See [Write notifications](#write-notifications).
 

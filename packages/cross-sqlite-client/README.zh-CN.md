@@ -156,12 +156,12 @@ await createDbClient({
 
 **`createWebAdapter(options?)` 选项：**
 
-| 选项               | 默认值    | 说明                                                                                                                                        |
-| ------------------ | --------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `timeoutMs`        | `15000`   | 等待 SQLite Worker 就绪的超时时间；若 Worker 脚本加载失败，不设超时会让 `initialize()` 永远 pending。                                       |
-| `fallbackToMemory` | `true`    | OPFS 不可用时是否静默回退到 `:memory:`（包括探测通过但打开 OPFS 文件失败的情况），而不是抛错。详见 [COOP/COEP](#opfs-持久化需要-coopcoep)。 |
-| `singleTabLock`    | `"fail"`  | 另一个标签页已经打开同一个 OPFS 文件时怎么办：`"fail"` 立即报错，`"wait"` 排队等，`"off"` 不协调。详见[多标签页协调](#多标签页协调)。       |
-| `logger`           | `console` | 诊断信息（OPFS 降级告警、Worker 错误）的输出位置。传入自己的 `{ warn, error }` 可接入应用的日志/监控。                                      |
+| 选项               | 默认值    | 说明                                                                                                                                                                                                                                                                       |
+| ------------------ | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `timeoutMs`        | `15000`   | 等待 SQLite Worker 就绪、以及它打开数据库文件的超时时间（各算各的）；不设超时，Worker 脚本加载失败或 OPFS 代理不再回复时 `initialize()` 会永远 pending。就绪超时直接 reject；打开 OPFS 文件超时退回内存（`reason: "open-timeout"`），`fallbackToMemory: false` 时 reject。 |
+| `fallbackToMemory` | `true`    | OPFS 不可用时是否静默回退到 `:memory:`（包括探测通过但打开 OPFS 文件失败的情况），而不是抛错。详见 [COOP/COEP](#opfs-持久化需要-coopcoep)。                                                                                                                                |
+| `singleTabLock`    | `"fail"`  | 另一个标签页已经打开同一个 OPFS 文件时怎么办：`"fail"` 立即报错，`"wait"` 排队等，`"off"` 不协调。详见[多标签页协调](#多标签页协调)。                                                                                                                                      |
+| `logger`           | `console` | 诊断信息（OPFS 降级告警、Worker 错误）的输出位置。传入自己的 `{ warn, error }` 可接入应用的日志/监控。                                                                                                                                                                     |
 
 **`createTauriAdapter()`** 和 **`createMemoryAdapter()`** 不接受选项；它们的 `initialize()` 只在开始时检查一次 `signal`。`createMemoryAdapter()` 用于测试——见[测试](#测试)。**`createMiniProgramAdapter(options)`** 见[小程序适配器](#小程序适配器)。
 
@@ -315,7 +315,7 @@ Cross-Origin-Embedder-Policy: require-corp
 ```ts
 const client = await createDbClient({ name: "my-app", adapter: createWebAdapter(), migrations })
 if (!client.storage.persistent) {
-  // "not-cross-origin-isolated" | "opfs-unsupported" | "opfs-unavailable" | "open-failed"
+  // "not-cross-origin-isolated" | "opfs-unsupported" | "opfs-unavailable" | "open-failed" | "open-timeout"
   showBanner(`这次的进度不会保存（${client.storage.reason}）`)
 }
 ```
