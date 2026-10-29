@@ -10,18 +10,20 @@
 # 跳过：
 #   git commit --no-verify   # / git push --no-verify（紧急情况）
 
+# 工具一律经 pnpm exec 调用，用仓库锁定的版本（和 CI、format:check 一致）：裸写 oxfmt 会用 PATH 上
+# 别的版本（比如 Neovim 的 Mason 装的），两个版本排版不同，钩子格式化完 CI 的 format:check 反而不过。
 pre-commit:
   parallel: true
   commands:
     format:
       # 自动格式化暂存区里的文件；stage_fixed 把改后的内容加回暂存区。
       glob: "*.{ts,tsx,js,jsx,mjs,cjs,json,md,yaml,yml}"
-      run: oxfmt {staged_files}
+      run: pnpm exec oxfmt {staged_files}
       stage_fixed: true
     lint:
       glob: "*.{ts,tsx,js,jsx}"
       # oxlint 对未暂存但工作区已有的同名文件也会扫；只传 staged_files 即可。
-      run: oxlint {staged_files}
+      run: pnpm exec oxlint {staged_files}
 
 pre-push:
   parallel: true
