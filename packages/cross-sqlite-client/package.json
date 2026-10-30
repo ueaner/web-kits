@@ -93,7 +93,7 @@
   },
   "optionalDependencies": {
     "@sqlite.org/sqlite-wasm": "3.54.1-build1",
-    "@tauri-apps/plugin-sql": "^2.5.0"
+    "@tauri-apps/plugin-sql": "^2.6.0"
   },
   "engines": {
     "node": ">=24"
