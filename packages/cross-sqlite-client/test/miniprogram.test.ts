@@ -299,3 +299,123 @@ describe("initialize", () => {
     await expect(adapter.initialize({ name: "../escape" })).rejects.toBeInstanceOf(DbInitializationError)
   })
 })
+
+/**
+ * 可控的引擎：allocFromTypedArray 可以按需失败（模拟内存不足这类临时失败），并统计还开着的连接（查泄漏）。
+ * 用的是测试引擎本身，只把这两处包一层
+ */
+async function controllableEngine() {
+  const s = await loadTestSqlite3()
+  const state = { failAlloc: false, openConnections: 0 }
+  class CountingDB extends s.oo1.DB {
+    constructor(...args: ConstructorParameters<typeof s.oo1.DB>) {
+      super(...args)
+      state.openConnections++
+    }
+    override close() {
+      if (this.pointer) state.openConnections--
+      return super.close()
+    }
+  }
+  const engine = {
+    ...s,
+    oo1: { ...s.oo1, DB: CountingDB },
+    wasm: {
+      ...s.wasm,
+      allocFromTypedArray: (bytes: Uint8Array) => {
+        if (state.failAlloc) throw new Error("WasmAllocError: out of memory")
+        return s.wasm.allocFromTypedArray(bytes)
+      },
+    },
+  } as typeof s
+  return { state, sqlite3: async () => engine }
+}
+
+describe("failures that are not corruption", () => {
+  async function seeded() {
+    const { fs, client } = await openClient()
+    await client.execute("INSERT INTO items (label) VALUES ('old')")
+    await client.execute("INSERT INTO items (label) VALUES ('new')")
+    await client.close()
+    return fs
+  }
+
+  it("fails to open (and can retry) when memory runs out, without moving the intact files aside", async () => {
+    const fs = await seeded()
+    const { state, sqlite3 } = await controllableEngine()
+    const logger = quietLogger()
+    const adapter = createMiniProgramAdapter({ sqlite3, fs, directory: DIR, logger })
+    state.failAlloc = true
+    await expect(adapter.initialize({ name: "app" })).rejects.toBeInstanceOf(DbInitializationError)
+    // 内存不足不说明文件坏了：两个文件原样留着，没有挪开，也没有退回旧版本
+    expect(fs.list(DIR)).toEqual(["app.sqlite", "app.sqlite.bak"])
+    expect(logger.error).not.toHaveBeenCalled()
+    state.failAlloc = false
+    expect(await labels(await adapter.initialize({ name: "app" }))).toEqual(["old", "new"])
+  })
+
+  it("closes the connection it opened from .bak when repairing the current file fails", async () => {
+    const fs = await seeded()
+    fs.files.set(DB, new Uint8Array(4096).fill(7))
+    const { state, sqlite3 } = await controllableEngine()
+    const adapter = createMiniProgramAdapter({ sqlite3, fs, directory: DIR, logger: quietLogger() })
+    fs.failNext("rename", { path: /app\.sqlite$/ })
+    await expect(adapter.initialize({ name: "app" })).rejects.toBeInstanceOf(DbInitializationError)
+    expect(state.openConnections).toBe(0)
+  })
+
+  it("starts over on the next initialize() when restoring after a failed save fails, and keeps both errors", async () => {
+    const fs = createFakeFileSystem()
+    const { state, sqlite3 } = await controllableEngine()
+    const adapter = createMiniProgramAdapter({ sqlite3, fs, directory: DIR, logger: quietLogger() })
+    const client = await createDbClient({ name: "app", adapter, migrations: MIGRATIONS })
+    await client.execute("INSERT INTO items (label) VALUES ('a')")
+
+    fs.failNext("writeFile", { path: /\.tmp$/, errMsg: "the maximum size of the file storage limit is exceeded" })
+    state.failAlloc = true
+    const error = await client.execute("INSERT INTO items (label) VALUES ('b')").catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(DbPersistenceError)
+    // 落盘失败的原因（配额满）没有被恢复失败的错误顶掉
+    const cause = (error as DbPersistenceError).cause as AggregateError
+    expect(cause).toBeInstanceOf(AggregateError)
+    expect(String(cause.errors[0])).toMatch(/storage limit/)
+
+    state.failAlloc = false
+    // 不用先 close()：initialize() 重新打开文件，而不是返回那个已经没有数据库的连接
+    const reopened = await adapter.initialize({ name: "app" })
+    expect(await labels(reopened)).toEqual(["a"])
+  })
+
+  it("does not hand out a client that a pending close() is about to shut", async () => {
+    const { adapter } = open()
+    const first = await adapter.initialize({ name: "app" })
+    const closing = first.close()
+    const again = adapter.initialize({ name: "app" })
+    await closing
+    const client = await again
+    await expect(client.execute("CREATE TABLE t (x)")).resolves.toBeDefined()
+    // 之后的 initialize() 拿到的还是这个连接，不会再打开一次（"already open"）
+    await expect(adapter.initialize({ name: "app" })).resolves.toBe(client)
+  })
+})
+
+describe("errors and saving", () => {
+  it("saves what a failing select() already applied", async () => {
+    const { fs, client } = await openClient()
+    await expect(client.select("INSERT INTO items (label) VALUES ('a') RETURNING id; SELECT missing FROM items")).rejects.toBeInstanceOf(
+      DbExecutionError,
+    )
+    // 进程这时被杀：生效了的 INSERT 已经在磁盘上，和内存一致
+    const { client: afterCrash } = await openClient(fs.fork())
+    expect(await labels(afterCrash)).toEqual(["a"])
+  })
+
+  it("reports the SQL error, not a save error, when a failed statement changed nothing", async () => {
+    const { fs, client } = await openClient()
+    await client.execute("INSERT INTO items (label, key) VALUES ('a', 'k')")
+    const writesBefore = fs.calls.writeFile
+    fs.failNext("writeFile", { path: /\.tmp$/ })
+    await expect(client.execute("INSERT INTO items (label, key) VALUES ('b', 'k')")).rejects.toBeInstanceOf(DbExecutionError)
+    expect(fs.calls.writeFile).toBe(writesBefore)
+  })
+})

@@ -74,9 +74,14 @@ export type SnapshotOrigin =
 export interface SnapshotFiles {
   /**
    * 读出数据库：依次尝试当前文件和 .bak，第一个能被 tryOpen 打开的就用它（tryOpen 返回 undefined 表示这个快照不可用）。
+   * tryOpen 抛错（内存不足这类和文件无关的失败）时 load 原样抛出，文件一个都不动。
    * 损坏的文件挪成 .corrupt-<时间>，从不删除；用 .bak 时会把它的内容写回当前文件。
+   * 打开之后的这些文件操作失败时，用 dispose 释放已经打开的 value 再抛错。
    */
-  load<T>(tryOpen: (bytes: Uint8Array) => T | undefined): Promise<{ value: T | undefined; origin: SnapshotOrigin }>
+  load<T>(
+    tryOpen: (bytes: Uint8Array) => T | undefined,
+    dispose: (value: T) => void,
+  ): Promise<{ value: T | undefined; origin: SnapshotOrigin }>
   /** 原子地保存一份快照：写 .tmp → 当前文件改名为 .bak → .tmp 改名为当前文件。.bak 留着，是上一个完好版本 */
   save(bytes: Uint8Array): Promise<void>
 }
@@ -148,7 +153,7 @@ export function createSnapshotFiles(fs: MiniProgramFileSystem, directory: string
   }
 
   return {
-    async load<T>(tryOpen: (bytes: Uint8Array) => T | undefined) {
+    async load<T>(tryOpen: (bytes: Uint8Array) => T | undefined, dispose: (value: T) => void) {
       await ensureDirectory()
       // .tmp 没有完成替换（保存时在改名之前被打断），里面的写入当时也没有返回成功，直接丢掉
       await removeIfPresent(temporary)
@@ -163,16 +168,21 @@ export function createSnapshotFiles(fs: MiniProgramFileSystem, directory: string
       if (backupBytes) {
         const value = tryOpen(backupBytes)
         if (value !== undefined) {
-          if (currentBytes) {
-            const movedTo = await moveAside(current)
-            logger.error(
-              `[MiniProgram DB] ${current} is corrupt; restored the previous version from ${backup} (corrupt file kept at ${movedTo}).`,
-            )
-          } else {
-            // 保存时在"当前文件改名为 .bak"和".tmp 改名为当前文件"之间被打断：不是损坏，但同样要从 .bak 恢复
-            logger.warn(`[MiniProgram DB] ${current} is missing; restored the previous version from ${backup}.`)
+          try {
+            if (currentBytes) {
+              const movedTo = await moveAside(current)
+              logger.error(
+                `[MiniProgram DB] ${current} is corrupt; restored the previous version from ${backup} (corrupt file kept at ${movedTo}).`,
+              )
+            } else {
+              // 保存时在"当前文件改名为 .bak"和".tmp 改名为当前文件"之间被打断：不是损坏，但同样要从 .bak 恢复
+              logger.warn(`[MiniProgram DB] ${current} is missing; restored the previous version from ${backup}.`)
+            }
+            await write(current, backupBytes)
+          } catch (error) {
+            dispose(value)
+            throw error
           }
-          await write(current, backupBytes)
           return { value, origin: "backup" as const }
         }
       }

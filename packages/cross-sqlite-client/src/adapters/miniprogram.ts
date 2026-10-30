@@ -38,6 +38,13 @@ interface ChangeMarks {
 }
 
 const SQLITE_OK = 0
+/** 说明快照本身坏了的结果码（主码）：SQLITE_CORRUPT、SQLITE_NOTADB */
+const CORRUPTION_CODES = new Set([11, 26])
+
+/** 打开快照时的失败是不是"快照坏了"：只看 SQLite 的结果码；内存不足这类没有结果码或别的结果码的失败不算 */
+function isCorruption(resultCode: unknown): boolean {
+  return typeof resultCode === "number" && CORRUPTION_CODES.has(resultCode & 0xff)
+}
 
 /**
  * 小程序适配器：数据库在内存里，调用结束时如果不在事务中、数据库又有变化，就把整个库导出成快照，
@@ -77,7 +84,11 @@ export function createMiniProgramAdapter(options: MiniProgramAdapterOptions): Db
     return db
   }
 
-  /** 新建一个内存连接；有快照时把它反序列化进去。快照打不开（不是 SQLite 文件、quick_check 不通过）时返回 undefined */
+  /**
+   * 新建一个内存连接；有快照时把它反序列化进去。快照坏了（不是 SQLite 文件、SQLITE_CORRUPT / SQLITE_NOTADB、quick_check 不通过）
+   * 时返回 undefined，调用方会挪开这个文件、退回上一个版本。其他失败（内存不足等）照样抛出：它们不说明文件坏了，
+   * 当成损坏的话完好的文件会被挪开、最近的写入看不到了（initialize 失败，之后可以重试）
+   */
   function openConnection(s: Sqlite3Static, bytes: Uint8Array | null): Database | undefined {
     const conn = new s.oo1.DB(":memory:", "c")
     if (!bytes) return conn
@@ -90,14 +101,22 @@ export function createMiniProgramAdapter(options: MiniProgramAdapterOptions): Db
       const pointer = s.wasm.allocFromTypedArray(bytes)
       const flags = s.capi.SQLITE_DESERIALIZE_FREEONCLOSE | s.capi.SQLITE_DESERIALIZE_RESIZEABLE
       const rc = s.capi.sqlite3_deserialize(conn.pointer!, "main", pointer, bytes.byteLength, bytes.byteLength, flags)
-      if (rc !== SQLITE_OK || conn.selectValue("PRAGMA quick_check") !== "ok") {
+      if (rc !== SQLITE_OK) {
+        if (isCorruption(rc)) {
+          conn.close()
+          return undefined
+        }
+        throw new Error(`[MiniProgram DB] sqlite3_deserialize failed with result code ${rc}`)
+      }
+      if (conn.selectValue("PRAGMA quick_check") !== "ok") {
         conn.close()
         return undefined
       }
       return conn
-    } catch {
+    } catch (error) {
       conn.close()
-      return undefined
+      if (isCorruption((error as { resultCode?: unknown } | null)?.resultCode)) return undefined
+      throw error
     }
   }
 
@@ -114,28 +133,40 @@ export function createMiniProgramAdapter(options: MiniProgramAdapterOptions): Db
   }
 
   /**
-   * 调用结束后决定要不要落盘：只在自动提交状态下（事务中导出的快照会带上没提交的数据）；
-   * 写入类调用总是落盘，select 只在数据库确实变了的时候落盘（用 select 执行的 INSERT … RETURNING、PRAGMA user_version = …）。
+   * 调用结束后决定要不要落盘：只在自动提交状态下（事务中导出的快照会带上没提交的数据）。
+   * "always"：成功的写入类调用总是落盘（resolve 时数据已经在磁盘上）；
+   * "if-changed"：只在数据库确实变了的时候落盘——select（用它执行的 INSERT … RETURNING、PRAGMA user_version = …），
+   * 以及出错的调用（多条语句里前面的可能已经生效；什么都没改的就不落盘，免得落盘失败盖住原来的 SQL 错误）。
    * 落盘失败时恢复到上次保存的快照并抛 DbPersistenceError。
    */
-  async function persistIfNeeded(kind: "write" | "read"): Promise<void> {
+  async function persistIfNeeded(when: "always" | "if-changed"): Promise<void> {
     const s = sqlite3!
     const d = requireDb()
     if (s.capi.sqlite3_get_autocommit(d.pointer!) === 0) return
     const next = readMarks(d)
-    if (kind === "read" && marks && !marksChanged(marks, next)) return
+    if (when === "if-changed" && marks && !marksChanged(marks, next)) return
     const bytes = s.capi.sqlite3_js_db_export(d.pointer!)
     try {
       await files!.save(bytes)
       lastSaved = bytes
       marks = next
     } catch (error) {
-      rollbackToLastSaved()
+      try {
+        rollbackToLastSaved()
+      } catch (restoreError) {
+        // 两个错误都留着：落盘失败的原因（配额满、改名失败……）才是根因
+        throw new DbPersistenceError(
+          new AggregateError([error, restoreError], "saving failed, then restoring the last saved snapshot failed"),
+        )
+      }
       throw new DbPersistenceError(error)
     }
   }
 
-  /** 丢掉内存里没能落盘的改动：关闭当前连接，用上一次成功保存的快照重新打开 */
+  /**
+   * 丢掉内存里没能落盘的改动：关闭当前连接，用上一次成功保存的快照重新打开。
+   * 重新打开也失败时，像 close() 一样放下这个数据库：下一次 initialize() 从磁盘重新打开（磁盘上就是上次保存的内容）
+   */
   function rollbackToLastSaved(): void {
     const s = sqlite3!
     try {
@@ -143,14 +174,36 @@ export function createMiniProgramAdapter(options: MiniProgramAdapterOptions): Db
     } catch {
       // 旧连接关不掉也要换成新连接
     }
-    const restored = openConnection(s, lastSaved)
+    db = null
+    let restored: Database | undefined
+    try {
+      restored = openConnection(s, lastSaved)
+    } catch (error) {
+      release()
+      initPromise = null
+      throw error
+    }
     if (!restored) {
       // lastSaved 是我们自己导出、成功写过的快照，打不开说明内存被破坏了；不能再继续用这个连接
-      db = null
-      throw new DbPersistenceError(new Error("[MiniProgram DB] Failed to restore the last saved snapshot"))
+      release()
+      initPromise = null
+      throw new Error("[MiniProgram DB] Failed to restore the last saved snapshot")
     }
     db = restored
     marks = readMarks(restored)
+  }
+
+  /**
+   * 放下这个数据库（连接已经关了或没了）：清掉状态和"已打开"的登记。不碰 initPromise：close() 调用时已经摘掉了，
+   * 之后排进来的 initialize() 的缓存不能被它清掉；恢复失败时由 rollbackToLastSaved 自己摘
+   */
+  function release(): void {
+    db = null
+    files = null
+    lastSaved = null
+    marks = null
+    if (fileKey) openFilesOf(options.fs).delete(fileKey)
+    fileKey = null
   }
 
   function runExec(d: Database, sql: string, params: unknown[]): { lastInsertId?: number; rowsAffected?: number } {
@@ -172,9 +225,13 @@ export function createMiniProgramAdapter(options: MiniProgramAdapterOptions): Db
         try {
           rows = d.selectObjects(sql, params as never) as T[]
         } catch (error) {
+          // 和 execute 一样：多条语句里前面的可能已经生效（INSERT … RETURNING; 出错的语句），改了东西就落盘
+          await persistIfNeeded("if-changed").catch((persistError) => {
+            throw new DbPersistenceError(new AggregateError([error, persistError], "SQL failed and persisting the partial result failed"))
+          })
           throw new DbExecutionError(sql, params, error)
         }
-        await persistIfNeeded("read")
+        await persistIfNeeded("if-changed")
         return rows
       })
     },
@@ -186,13 +243,13 @@ export function createMiniProgramAdapter(options: MiniProgramAdapterOptions): Db
         try {
           result = runExec(d, sql, params)
         } catch (error) {
-          // 失败的语句也可能已经改了东西（多条语句里前面的已经生效），照样按规则落盘
-          await persistIfNeeded("write").catch((persistError) => {
+          // 失败的语句也可能已经改了东西（多条语句里前面的已经生效）：改了东西就落盘
+          await persistIfNeeded("if-changed").catch((persistError) => {
             throw new DbPersistenceError(new AggregateError([error, persistError], "SQL failed and persisting the partial result failed"))
           })
           throw new DbExecutionError(sql, params, error)
         }
-        await persistIfNeeded("write")
+        await persistIfNeeded("always")
         return result
       })
     },
@@ -227,7 +284,7 @@ export function createMiniProgramAdapter(options: MiniProgramAdapterOptions): Db
         }
         // 批量执行没有事务保证：中途失败时前面已经生效的语句照样落盘，再抛原来的错误
         try {
-          await persistIfNeeded("write")
+          await persistIfNeeded(failure ? "if-changed" : "always")
         } catch (persistError) {
           throw failure
             ? new DbPersistenceError(new AggregateError([failure, persistError], "batch failed and persisting failed"))
@@ -238,24 +295,16 @@ export function createMiniProgramAdapter(options: MiniProgramAdapterOptions): Db
     },
 
     close(): Promise<void> {
+      // 调用时就同步摘掉初始化缓存：之后的 initialize() 不能再拿到这个马上要关掉的连接，而是排在 close 后面重新打开。
+      // 初始化本身也在队列里，进行中的那一次会在 close 之前跑完，不会在 close 之后才留下一个没人持有句柄的连接
+      initPromise = null
       return serial(async () => {
-        // 先同步摘掉初始化缓存：init 进行中时等它落定，避免 close 返回后初始化才完成、留下一个没人持有句柄的连接
-        const pending = initPromise
-        initPromise = null
-        if (pending) {
-          await pending.catch(() => {})
-        }
         try {
           db?.close()
         } catch (error) {
           throw new DbCloseError(error)
         } finally {
-          db = null
-          files = null
-          lastSaved = null
-          marks = null
-          if (fileKey) openFilesOf(options.fs).delete(fileKey)
-          fileKey = null
+          release()
         }
       })
     },
@@ -280,22 +329,32 @@ export function createMiniProgramAdapter(options: MiniProgramAdapterOptions): Db
       const s = sqlite3
       const f = createSnapshotFiles(options.fs, options.directory, config.name, logger)
       let openedBytes: Uint8Array | null = null
-      const { value } = await f.load((bytes) => {
-        const conn = openConnection(s, bytes)
-        if (conn) openedBytes = bytes
-        return conn
-      })
+      const { value } = await f.load(
+        (bytes) => {
+          const conn = openConnection(s, bytes)
+          if (conn) openedBytes = bytes
+          return conn
+        },
+        (conn) => conn.close(),
+      )
       const conn = value ?? openConnection(s, null)!
+      db = conn
       files = f
       fileKey = key
-      db = conn
       lastSaved = openedBytes
       marks = readMarks(conn)
       return client
     } catch (error) {
+      // 已经打开的连接（readMarks 失败时）也要关掉：它占着整个数据库大小的 wasm 内存
+      try {
+        db?.close()
+      } catch {
+        // 关不掉也要继续清理
+      }
       opened.delete(key)
       db = null
       files = null
+      fileKey = null
       throw error instanceof DbInitializationError ? error : new DbInitializationError(error)
     }
   }
@@ -307,10 +366,12 @@ export function createMiniProgramAdapter(options: MiniProgramAdapterOptions): Db
       // 只在开始时检查一次取消信号：读文件和加载引擎都不支持中途取消
       if (options?.signal?.aborted) return Promise.reject(new DbInitializationError(options.signal.reason))
       if (!initPromise) {
-        initPromise = doInitialize(config)
+        // 排进调用队列：排在它前面的 close() 先放下旧连接和"已打开"的登记，它再打开
+        const promise = serial(() => doInitialize(config))
+        initPromise = promise
         // 失败后允许重试；调用方拿到的仍然是同一个会 reject 的 promise
-        initPromise.catch(() => {
-          initPromise = null
+        promise.catch(() => {
+          if (initPromise === promise) initPromise = null
         })
       }
       return initPromise
