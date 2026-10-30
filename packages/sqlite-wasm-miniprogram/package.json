@@ -1,6 +1,6 @@
 {
   "name": "sqlite-wasm-miniprogram",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "The official @sqlite.org/sqlite-wasm, built to run in WeChat mini programs (WXWebAssembly): injected shims, cross-realm fixes and prebuilt callback stubs.",
   "keywords": [
     "miniprogram",
