@@ -367,12 +367,15 @@ const client = await createDbClient({ name: "app", adapter, migrations, migratio
 数据怎么存：
 
 - 数据库在内存里。每次调用结束后，**只要不在事务中、并且数据库有变化**，就导出整个库（`sqlite3_js_db_export`），原子地写到
-  `<directory>/<name>.sqlite`，**写完以后调用才返回**。`execute()` / `executeBatch()` 总是落盘；`select()` 只在它改了东西时落盘
-  （例如 `INSERT … RETURNING`）。是否在事务中用 `sqlite3_get_autocommit` 判断，不解析 SQL：事务中导出的快照会带上没提交的数据。
+  `<directory>/<name>.sqlite`，**写完以后调用才返回**。成功的 `execute()` / `executeBatch()` 总是落盘；`select()` 和出错的调用只在数据库确实变了时落盘
+  （例如 `INSERT … RETURNING`，或出错语句之前已经生效的语句），SQL 错误不会被落盘错误盖住。是否在事务中用 `sqlite3_get_autocommit` 判断，不解析 SQL：事务中导出的快照会带上没提交的数据。
 - 落盘失败时，内存里的数据库恢复到上一次成功保存的快照，并抛出 `DbPersistenceError`：内存永远不会比磁盘超前，所以重试同一个调用会真正重写一次。
+  恢复也失败时，适配器放下这个数据库，下一次 `initialize()` 从磁盘重新打开；错误里同时带着两个原因。
 - 小程序没有 fsync，掉电时可能出现"改名生效了、新文件内容没写完"。所以上一个完好版本一直保留为 `<name>.sqlite.bak`；打开时校验当前文件
   （文件头 + `PRAGMA quick_check`），损坏就用备份。损坏的文件挪成 `<name>.sqlite.corrupt-<时间>`，**永不删除**；两个都坏了就打开一个新库
-  （并调用 `logger.error`），不让应用永远打不开。
+  （并调用 `logger.error`），不让应用永远打不开。只有真的损坏才算（文件头不对、`SQLITE_CORRUPT` / `SQLITE_NOTADB`、`quick_check` 不通过）：
+  内存不足这类临时失败让 `initialize()` 失败，不动任何文件，之后可以重试。
+- iOS 真机上要配合 `sqlite-wasm-miniprogram` 0.2.0 及以上（更早的版本在 iOS 上初始化失败）。
 - 不退回内存：宿主缺少需要的能力时 `initialize()` 直接失败。同一个文件在进程内（同一个 `fs` 对象）只能打开一次。
 - 迁移用 `transactionalExecutor`，整个迁移只落盘一次。每次保存都重写整个文件，小库没有问题（几千行约 120 KB）；库变大以后，
   可以基于宿主的同步文件 API 换成 VFS。

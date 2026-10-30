@@ -93,8 +93,7 @@ null or a WebAssembly function`），所以凡是要 SQLite 的 C 代码回调 J
 - **只有内存数据库**：小程序里没有持久化的 VFS（默认 VFS 背后是 Emscripten 的内存文件系统，OPFS 要 Worker，kvvfs 要 localStorage），
   用 `:memory:` 打开。传 `wx.env.USER_DATA_PATH` 下的路径会报 `SQLITE_CANTOPEN`（result code 14），建了目录也只是内存里的文件。
   持久化靠快照：`sqlite3_js_db_export` 导出整个库写成文件，打开时读回来 `sqlite3_deserialize`（`cross-sqlite-client` 的适配器就是这样做的）。
-- 已在微信开发者工具模拟器和一台 Android 真机（Android 14、微信 8.0.79、基础库 3.17.4）上验证：打开、写入、退出后重新进入能读回数据。**iOS 真机还没验证**：测试里用模拟运行时覆盖了 iOS 的两种行为（导出函数 `length` 为 0、函数表不收导出函数），初始化和
-  `cross-sqlite-client` 的读写、落盘、重新打开在模拟里都不装回调。
+- 已在微信开发者工具模拟器和 Android、iOS 真机（含微信云测试）上验证。
 
 ## 测试
 

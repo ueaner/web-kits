@@ -103,9 +103,7 @@ If initialization fails, the next call tries again.
   `wx.env.USER_DATA_PATH` fails with `SQLITE_CANTOPEN` (result code 14), and even with the directory created it would
   only be a file in memory. Persist with snapshots: `sqlite3_js_db_export` the whole database to a file and
   `sqlite3_deserialize` it on open (that's what `cross-sqlite-client`'s adapter does).
-- Verified in the WeChat DevTools simulator and on an Android device (Android 14, WeChat 8.0.79, base library 3.17.4): opening, writing, and reading back after re-entering the mini game. **Not yet verified on iOS devices**: the tests simulate both iOS behaviors (exported functions with `length === 0`,
-  and a function table that rejects them), and in that simulation init and `cross-sqlite-client`'s reads, writes,
-  saves and reopening install no callback.
+- Verified in the WeChat DevTools simulator and on Android and iOS devices (including WeChat's cloud testing).
 
 ## Testing
 

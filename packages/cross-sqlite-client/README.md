@@ -531,15 +531,21 @@ How it stores data:
 
 - The database lives in memory. After a call, **if no transaction is open and the database changed**, it's exported
   (`sqlite3_js_db_export`) and saved atomically to `<directory>/<name>.sqlite` — and the call resolves only after the
-  save. `execute()`/`executeBatch()` always save; `select()` saves only when it changed something (e.g. `INSERT … RETURNING`).
+  save. A successful `execute()`/`executeBatch()` always saves; `select()`, and any call that fails, saves only when the
+  database changed (e.g. `INSERT … RETURNING`, or statements before the failing one), so a SQL error isn't masked by a
+  save error.
   Open transactions are detected with `sqlite3_get_autocommit`, not by parsing SQL; a snapshot taken inside one would
   contain uncommitted rows.
 - If saving fails, the in-memory database is restored from the last saved snapshot and `DbPersistenceError` is thrown:
-  memory never gets ahead of the disk, so retrying the same call really writes again.
+  memory never gets ahead of the disk, so retrying the same call really writes again. If restoring fails too, the
+  adapter lets go of the database and the next `initialize()` reopens it from disk; the error carries both causes.
 - Mini programs have no `fsync`, so a rename can survive a power loss that the new file's contents didn't. The previous
   good version is kept as `<name>.sqlite.bak`; on open, the current file is checked (header + `PRAGMA quick_check`) and
   the backup used if it's damaged. Damaged files are moved to `<name>.sqlite.corrupt-<time>`, **never deleted**; if both
-  are damaged, a new database is opened (and `logger.error` called) so the app isn't stuck.
+  are damaged, a new database is opened (and `logger.error` called) so the app isn't stuck. Only real damage counts (a
+  bad header, `SQLITE_CORRUPT` / `SQLITE_NOTADB`, a failed `quick_check`): a transient failure such as running out of
+  memory makes `initialize()` reject without touching any file, and it can be retried.
+- On iOS devices, use `sqlite-wasm-miniprogram` 0.2.0 or later (earlier versions fail to initialize there).
 - There's no memory fallback: if the host can't provide what's needed, `initialize()` rejects. A file can be open once
   per process (per `fs` object).
 - Use `transactionalExecutor` so a whole migration is saved once. Each save rewrites the whole file, which is fine for
