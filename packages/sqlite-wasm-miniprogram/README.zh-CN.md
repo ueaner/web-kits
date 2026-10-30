@@ -82,7 +82,7 @@ const client = await createDbClient({ name: "app", adapter, migrations, migratio
 ## 限制
 
 - **iOS 真机上不能用 JS 回调**：iOS 的 `WXWebAssembly` 把 wasm 导出函数暴露成 JS 包装函数，wasm 函数表不收（`Table.set(): Argument 1 must be
-null or a WebAssembly function`），所以凡是要 SQLite 的 C 代码回调 JS 的 API 在 iOS 上都会抛错：`create_function` / `createFunction`、
+  null or a WebAssembly function`），所以凡是要 SQLite 的 C 代码回调 JS 的 API 在 iOS 上都会抛错：`create_function` / `createFunction`、
   `create_collation`、`update_hook` / `commit_hook` 等钩子、`set_authorizer`、`progress_handler`、`trace_v2`（包括 `oo1.DB` 的 `"t"` 标志）、
   带 JS 回调的 `capi.sqlite3_exec`、JS 实现的 VFS 和虚拟表。JS 调 wasm 的路径不受影响：建表、读写、事务、`db.exec({ callback })`
   （它在 JS 里逐行 `step`）、导出和 `sqlite3_deserialize` 都能用。为此初始化时不装任何回调：JS 实现的 VFS（kvvfs 的 JS 方法、OPFS 系列）

@@ -612,7 +612,7 @@ format-clean.
 ## Known limitations
 
 - **Writes run through `select()` don't notify.** Route writes — `INSERT …
-RETURNING` included — through `execute()`; see [Write notifications](#write-notifications).
+  RETURNING` included — through `execute()`; see [Write notifications](#write-notifications).
 - **A hand-written transaction outside `groupWrites` can be read uncommitted
   by a listener.** See [Write notifications](#write-notifications).
 
