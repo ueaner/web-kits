@@ -12,7 +12,7 @@
   "dependencies": {
     "cross-tab-kit": "workspace:*",
     "pending-task-kit": "workspace:*",
-    "zustand": "^5.0.15"
+    "zustand": "^5.0.16"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
