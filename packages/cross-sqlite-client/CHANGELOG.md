@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.3
+
+### Patch Changes
+
+- 90781cb: The optional `@tauri-apps/plugin-sql` dependency now requires `^2.6.0` (was `^2.5.0`). 2.6.0 only adds an optional `options` argument (`autoCreate`) to `Database.load`; this package's usage is unchanged. A Tauri project still locked to 2.5.x gets 2.6.x along with this upgrade.
+
 ## 0.6.2
 
 ### Patch Changes
