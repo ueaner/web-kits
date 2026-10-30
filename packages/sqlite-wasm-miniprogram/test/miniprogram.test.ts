@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { createDbClient, transactionalExecutor } from "cross-sqlite-client"
 import { createMiniProgramAdapter } from "cross-sqlite-client/adapters/miniprogram"
 // 测的是构建产物：注入了垫片的 glue 只存在于 dist/ 里
@@ -37,9 +37,20 @@ describe("initSqlite3 in a simulated mini program", () => {
     expect(await sqlite3()).toBe(await sqlite3())
   })
 
-  it("creates callback stubs only from the prebuilt files", async () => {
-    await sqlite3()
-    // 初始化时 glue 用到的回调都走了 stubs/ 里的预生成文件（模拟的 Module 不接受字节）
+  it("installs no callback at init, and creates one from the prebuilt stubs when it is needed", async () => {
+    const s = await sqlite3()
+    // 初始化不往函数表装回调（JS VFS 关掉了，SQL trace 回调用到才装）：iOS 真机的函数表不收 JS 函数（web-kits#10）
+    expect(wx.moduleCalls).toEqual([])
+    // 用 trace 标志打开时才装 trace 回调，走 stubs/ 里的预生成文件（模拟的 Module 不接受字节）
+    const log = vi.spyOn(console, "log").mockImplementation(() => {})
+    try {
+      const db = new s.oo1.DB(":memory:", "ct")
+      db.exec("SELECT 1")
+      db.close()
+      expect(log.mock.calls.some(([message]) => typeof message === "string" && message.startsWith("SQL TRACE"))).toBe(true)
+    } finally {
+      log.mockRestore()
+    }
     expect(wx.moduleCalls.length).toBeGreaterThan(0)
     for (const path of wx.moduleCalls) {
       expect(path).toMatch(/^\/sqlite\/stubs\/[0-9a-f]+\.wasm$/)

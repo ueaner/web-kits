@@ -40,24 +40,45 @@ describe("initSqlite3 failures", () => {
   })
 })
 
-describe("the glue's own warnings", () => {
-  // 在 Node（和小程序）里 glue 装不上 OPFS VFS，会警告 "Ignoring inability to install 'opfs' sqlite3_vfs"
+describe("the glue's configuration", () => {
+  const glueWarn = (s: unknown, ...args: unknown[]) => (s as { config: { warn(...a: unknown[]): void } }).config.warn(...args)
   const opfsWarning = (args: unknown[]) => args.some((arg) => typeof arg === "string" && /Ignoring inability to install/.test(arg))
 
-  it("go to the logger, not to console.warn", async () => {
+  it("sends the glue's own warnings to the logger, not to console.warn", async () => {
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {})
     const warnings: unknown[][] = []
     const initSqlite3 = await freshInit()
-    await initSqlite3({ webAssembly: createFakeWXWebAssembly(), assetsDir: ASSETS_DIR, logger: { warn: (...args) => warnings.push(args) } })
-    expect(warnings.some(opfsWarning)).toBe(true)
-    expect(consoleWarn.mock.calls.some(opfsWarning)).toBe(false)
+    const s = await initSqlite3({
+      webAssembly: createFakeWXWebAssembly(),
+      assetsDir: ASSETS_DIR,
+      logger: { warn: (...args) => warnings.push(args) },
+    })
+    glueWarn(s, "probe")
+    expect(warnings).toContainEqual(["[sqlite-wasm-miniprogram]", "probe"])
+    expect(consoleWarn).not.toHaveBeenCalled()
     expect((globalThis as { sqlite3ApiConfig?: unknown }).sqlite3ApiConfig).toBeUndefined()
   })
 
-  it("are dropped without a logger", async () => {
+  it("drops them without a logger", async () => {
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {})
     const initSqlite3 = await freshInit()
-    await initSqlite3({ webAssembly: createFakeWXWebAssembly(), assetsDir: ASSETS_DIR })
-    expect(consoleWarn.mock.calls.some(opfsWarning)).toBe(false)
+    glueWarn(await initSqlite3({ webAssembly: createFakeWXWebAssembly(), assetsDir: ASSETS_DIR }), "probe")
+    expect(consoleWarn).not.toHaveBeenCalled()
+  })
+
+  it("leaves out the JS VFSes (none works in a mini program, and their callbacks break iOS)", async () => {
+    const warnings: unknown[][] = []
+    const initSqlite3 = await freshInit()
+    const s = await initSqlite3({
+      webAssembly: createFakeWXWebAssembly(),
+      assetsDir: ASSETS_DIR,
+      logger: { warn: (...args) => warnings.push(args) },
+    })
+    // OPFS 系列整个是 JS 实现的，关掉就不注册；kvvfs 是 sqlite3.wasm 里的 C VFS，C 启动时就注册了，
+    // 关掉的是 glue 给它装的 JS 方法（共 15 个回调）。它不装回调，留着无害（初始化没装回调见 ios-export-length.test.ts）
+    for (const name of ["opfs", "opfs-sahpool", "opfs-wl"]) expect(s.capi.sqlite3_vfs_find(name)).toBeFalsy()
+    expect(s.capi.sqlite3_vfs_find(null)).toBeTruthy()
+    // 不再尝试装 OPFS，也就没有 "Ignoring inability to install 'opfs'" 这类警告
+    expect(warnings.some(opfsWarning)).toBe(false)
   })
 })

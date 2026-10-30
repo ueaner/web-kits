@@ -16,7 +16,7 @@ export interface InitSqlite3Options {
    * 目录里要有 sqlite3.wasm（或 sqlite3.wasm.br）和 stubs/。
    */
   assetsDir: string
-  /** 加载 brotli 压缩的 sqlite3.wasm.br（约 341 KB）还是未压缩的 sqlite3.wasm（约 869 KB），默认 "br" */
+  /** 加载 brotli 压缩的 sqlite3.wasm.br（约 353 KB）还是未压缩的 sqlite3.wasm（约 879 KB），默认 "br" */
   wasmFile?: "br" | "wasm"
   /** glue 的诊断输出（例如"OPFS 装不上"这类可以忽略的警告），默认丢掉 */
   logger?: { warn(message: string, ...args: unknown[]): void }
@@ -31,6 +31,14 @@ const initModule = sqlite3InitModule as unknown as (moduleArg: {
   print: (...args: unknown[]) => void
   printErr: (...args: unknown[]) => void
 }) => Promise<Sqlite3Static>
+
+/**
+ * 关掉的 JS VFS：小程序里一个也用不上（kvvfs 要 localStorage / sessionStorage，OPFS 系列要 OPFS 和 Worker），
+ * 而 glue 初始化时会把它们的方法当回调装进 wasm 函数表（共 27 个）。iOS 真机的 WXWebAssembly 导出的是 JS 包装函数，
+ * 函数表不收（"Table.set(): Argument 1 must be null or a WebAssembly function"），装一个就初始化失败。
+ * 关掉后初始化不装任何回调（SQL trace 回调构建时改成了用到才装，scripts/build.mjs）
+ */
+const DISABLED_VFS = { kvvfs: true, opfs: true, "opfs-vfs": true, "opfs-sahpool": true, "opfs-wl": true }
 
 let initializing: Promise<Sqlite3Static> | null = null
 
@@ -58,10 +66,16 @@ export function initSqlite3(options: InitSqlite3Options): Promise<Sqlite3Static>
     const wasmPath = `${assetsDir}/sqlite3.wasm${options.wasmFile === "wasm" ? "" : ".br"}`
     configureShims({ webAssembly, stubsDir: `${assetsDir}/stubs` })
     const warn = (...args: unknown[]) => options.logger?.warn("[sqlite-wasm-miniprogram]", ...args)
-    // glue 自己的警告（例如"OPFS 装不上"）走 sqlite3.config.warn，默认是 console.warn，不经过 printErr：
-    // 用 glue 认的 globalThis.sqlite3ApiConfig 接到 logger 上（glue 初始化完会删掉它）
-    const global = globalThis as { sqlite3ApiConfig?: Record<string, unknown> }
-    global.sqlite3ApiConfig = { ...global.sqlite3ApiConfig, warn }
+    // 用 glue 认的 globalThis.sqlite3ApiConfig 配置它（glue 初始化完会删掉它）：
+    // - glue 自己的警告走 sqlite3.config.warn，默认是 console.warn，不经过 printErr：接到 logger 上；
+    // - 关掉 JS 实现的 VFS（DISABLED_VFS）
+    const global = globalThis as { sqlite3ApiConfig?: { disable?: { vfs?: Record<string, boolean> } } & Record<string, unknown> }
+    const previous = global.sqlite3ApiConfig
+    global.sqlite3ApiConfig = {
+      ...previous,
+      warn,
+      disable: { ...previous?.disable, vfs: { ...previous?.disable?.vfs, ...DISABLED_VFS } },
+    }
 
     // instantiateWasm 钩子失败时 glue 不会自己结束，要从这里 reject
     initModule({

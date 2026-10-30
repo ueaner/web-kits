@@ -55,8 +55,8 @@ importers:
         version: 5.0.2(@types/node@26.6.5)(jsdom@30.1.1)(vite@8.3.1(@types/node@26.6.5)(esbuild@0.25.10)(jiti@2.7.0)(yaml@2.9.1))
     optionalDependencies:
       '@sqlite.org/sqlite-wasm':
-        specifier: 3.53.4-build1
-        version: 3.53.4-build1
+        specifier: 3.54.1-build1
+        version: 3.54.1-build1
       '@tauri-apps/plugin-sql':
         specifier: ^2.5.0
         version: 2.5.0
@@ -221,8 +221,8 @@ importers:
   packages/sqlite-wasm-miniprogram:
     dependencies:
       '@sqlite.org/sqlite-wasm':
-        specifier: 3.53.4-build1
-        version: 3.53.4-build1
+        specifier: 3.54.1-build1
+        version: 3.54.1-build1
     devDependencies:
       '@types/node':
         specifier: ^26.6.5
@@ -1182,8 +1182,8 @@ packages:
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
-  '@sqlite.org/sqlite-wasm@3.53.4-build1':
-    resolution: {integrity: sha512-U8pvL0patYHMgieD8JxxYJTlh9m1LUX8+BDYb7MiKQzBI89f2qbdmdcG/PvnPaLm9wsBbv4VlVG453ixnxBOnA==}
+  '@sqlite.org/sqlite-wasm@3.54.1-build1':
+    resolution: {integrity: sha512-foW427VBLJ3G87bsnvQTZCc9zYe0Fq1wH0pz1I6BlKLKXcArIAyTkHtq0iT2llmhcMQt9T/p6l5PpQQh+6O8uQ==}
     engines: {node: '>=22'}
 
   '@tailwindcss/node@4.3.3':
@@ -1325,9 +1325,6 @@ packages:
 
   '@types/istanbul-reports@3.0.4':
     resolution: {integrity: sha512-pk2B1NWalF9toCRu6gjBzR69syFjP4Od8WRAX+0mmf9lAjCRicLOWc+ZrxZHx/0XRjotgkF9t6iaMJ+aXcOdZQ==}
-
-  '@types/node@26.6.3':
-    resolution: {integrity: sha512-dsqMQQoeTLqu9wynDD00q573mNzso3IdQOAfHRJqLCcmCFPoGo9A1bDpUcv/9tnKpErQWv9uKeGfl37EIS02Yg==}
 
   '@types/node@26.6.5':
     resolution: {integrity: sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg==}
@@ -2900,7 +2897,7 @@ snapshots:
     dependencies:
       '@types/istanbul-lib-coverage': 2.0.6
       '@types/istanbul-reports': 3.0.4
-      '@types/node': 26.6.3
+      '@types/node': 26.6.5
       '@types/yargs': 16.0.11
       chalk: 4.0.0
 
@@ -3380,7 +3377,7 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
-  '@sqlite.org/sqlite-wasm@3.53.4-build1': {}
+  '@sqlite.org/sqlite-wasm@3.54.1-build1': {}
 
   '@tailwindcss/node@4.3.3':
     dependencies:
@@ -3499,10 +3496,6 @@ snapshots:
   '@types/istanbul-reports@3.0.4':
     dependencies:
       '@types/istanbul-lib-report': 3.0.3
-
-  '@types/node@26.6.3':
-    dependencies:
-      undici-types: 8.9.0
 
   '@types/node@26.6.5':
     dependencies:

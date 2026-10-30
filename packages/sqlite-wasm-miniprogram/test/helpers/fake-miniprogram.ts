@@ -25,7 +25,8 @@ const assertPackagePath = (source: unknown) => {
 
 export interface FakeWXWebAssemblyOptions {
   /**
-   * 模拟 iOS 真机：instantiate 给的导出函数 length 都是 0（不是参数个数）。
+   * 模拟 iOS 真机（web-kits#10）：导出的函数是 JS 包装函数，不是 wasm 函数——length 都是 0，函数表也不收
+   * （Table.set 抛 TypeError）。instantiate 和 Instance（回调桩模块）的导出都这样。
    * "zero"：length 是 0，可以重新定义；"zero-locked"：length 是 0，也不能重新定义（只能包一层）
    */
   exportLength?: "zero" | "zero-locked"
@@ -74,7 +75,11 @@ export function createFakeWXWebAssembly(options: FakeWXWebAssemblyOptions = {}):
       }
     },
     Module,
-    Instance: realm.Instance,
+    Instance: options.exportLength
+      ? function Instance(module: WebAssembly.Module, imports: WebAssembly.Imports) {
+          return { exports: zeroLengthExports(new realm.Instance(module, imports).exports) }
+        }
+      : realm.Instance,
     Memory: realm.Memory,
     Table: realm.Table,
   }

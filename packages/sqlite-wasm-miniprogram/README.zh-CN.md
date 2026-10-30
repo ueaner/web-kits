@@ -9,6 +9,7 @@
 
 | 本包  | `@sqlite.org/sqlite-wasm` | SQLite |
 | ----- | ------------------------- | ------ |
+| 0.2.x | 3.54.1-build1             | 3.54.1 |
 | 0.1.x | 3.53.4-build1             | 3.53.4 |
 
 具体版本也写在 `dist/assets/manifest.json` 里。
@@ -40,7 +41,7 @@ pnpm add sqlite-wasm-miniprogram
 - **Taro**：`copy.patterns: [{ from: "node_modules/sqlite-wasm-miniprogram/dist/assets/", to: "dist/sqlite/" }]`；
 - **vite-plugin-taro（VPT）**：复制到 `public/sqlite/`。
 
-`sqlite3.wasm.br`（约 341 KB，默认）和 `sqlite3.wasm`（约 869 KB）只需要其中一个；JS 部分约 220 KB。放主包（2 MB 限制），
+`sqlite3.wasm.br`（约 353 KB，默认）和 `sqlite3.wasm`（约 879 KB）只需要其中一个；JS 部分约 232 KB。放主包（2 MB 限制），
 或者放在打开数据库之前就会加载的分包里。
 
 ## 用法
@@ -80,11 +81,20 @@ const client = await createDbClient({ name: "app", adapter, migrations, migratio
 
 ## 限制
 
-- **回调签名**：交给 SQLite 的 JS 函数（VFS 方法、`create_function`、`update_hook` 等）需要它对应 wasm 签名的预生成桩模块。构建覆盖了
-  glue 初始化时设置的全部回调、`cross-sqlite-client` 用到的能力，以及 glue 源码里能找到的全部签名字面量（共 13 个桩模块）。
+- **iOS 真机上不能用 JS 回调**：iOS 的 `WXWebAssembly` 把 wasm 导出函数暴露成 JS 包装函数，wasm 函数表不收（`Table.set(): Argument 1 must be
+null or a WebAssembly function`），所以凡是要 SQLite 的 C 代码回调 JS 的 API 在 iOS 上都会抛错：`create_function` / `createFunction`、
+  `create_collation`、`update_hook` / `commit_hook` 等钩子、`set_authorizer`、`progress_handler`、`trace_v2`（包括 `oo1.DB` 的 `"t"` 标志）、
+  带 JS 回调的 `capi.sqlite3_exec`、JS 实现的 VFS 和虚拟表。JS 调 wasm 的路径不受影响：建表、读写、事务、`db.exec({ callback })`
+  （它在 JS 里逐行 `step`）、导出和 `sqlite3_deserialize` 都能用。为此初始化时不装任何回调：JS 实现的 VFS（kvvfs 的 JS 方法、OPFS 系列）
+  关掉了，`oo1.DB` 的 SQL trace 回调改成用 `"t"` 打开时才装（[web-kits#10](https://github.com/ueaner/web-kits/issues/10)）。
+- **回调签名**（Android、开发者工具）：交给 SQLite 的 JS 函数需要它对应 wasm 签名的预生成桩模块。构建覆盖了
+  glue 用到的回调、`cross-sqlite-client` 用到的能力，以及 glue 源码里能找到的全部签名字面量（共 13 个桩模块）。
   清单以外的签名会抛出 `missing prebuilt callback stub …`；要用回调类 API 之前，先看 `manifest.json` 里的 `stubs`。
-- **没有 OPFS / Worker**：小程序里没有持久化的 VFS。持久化靠导出整个数据库（`cross-sqlite-client` 的适配器就是这样做的）。
-- 已在微信开发者工具模拟器和一台 Android 真机（Android 14、微信 8.0.79、基础库 3.17.4）上验证：打开、写入、退出后重新进入能读回数据。**iOS 真机还没验证**（iOS 导出函数 `length` 为 0 的情况在测试里用模拟运行时覆盖）。
+- **只有内存数据库**：小程序里没有持久化的 VFS（默认 VFS 背后是 Emscripten 的内存文件系统，OPFS 要 Worker，kvvfs 要 localStorage），
+  用 `:memory:` 打开。传 `wx.env.USER_DATA_PATH` 下的路径会报 `SQLITE_CANTOPEN`（result code 14），建了目录也只是内存里的文件。
+  持久化靠快照：`sqlite3_js_db_export` 导出整个库写成文件，打开时读回来 `sqlite3_deserialize`（`cross-sqlite-client` 的适配器就是这样做的）。
+- 已在微信开发者工具模拟器和一台 Android 真机（Android 14、微信 8.0.79、基础库 3.17.4）上验证：打开、写入、退出后重新进入能读回数据。**iOS 真机还没验证**：测试里用模拟运行时覆盖了 iOS 的两种行为（导出函数 `length` 为 0、函数表不收导出函数），初始化和
+  `cross-sqlite-client` 的读写、落盘、重新打开在模拟里都不装回调。
 
 ## 测试
 

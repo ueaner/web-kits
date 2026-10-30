@@ -4,7 +4,7 @@
 //      顺便读出 sqlite3.wasm 每个导出函数的参数个数（iOS 真机的导出函数 length 都是 0，运行时按它修正，src/shims.ts restoreArity）；
 //   2. 用 esbuild 把 src/index.ts 连同官方 glue（@sqlite.org/sqlite-wasm 的 dist/index.mjs）打成 dist/index.js（只发 ESM），
 //      inject src/shims.ts，替换 glue 里的自由变量 URL / URLSearchParams / WebAssembly / TextEncoder / TextDecoder，
-//      define 注入上一步读出的参数个数；
+//      define 注入上一步读出的参数个数，并改写 glue 里初始化时无条件安装的 SQL trace 回调（lazyTraceCallback）；
 //   3. 复制 sqlite3.wasm，生成 brotli 压缩的 sqlite3.wasm.br，写 dist/assets/manifest.json；
 //   4. tsc 生成类型声明。
 import { execFileSync } from "node:child_process"
@@ -127,7 +127,40 @@ globalThis.WebAssembly = Object.getPrototypeOf(globalThis.WebAssembly)
 for (const [hex, bytes] of stubs) writeFileSync(join(assets, "stubs", `${hex}.wasm`), bytes)
 
 // 2. 打包
+// glue 初始化时无条件把 SQL trace 回调（只有 new oo1.DB(name, "…t") 才用）装进 wasm 函数表。iOS 真机的 WXWebAssembly
+// 函数表不收 JS 包装函数，装一个就初始化失败；JS VFS 已经在运行时关掉（src/index.ts DISABLED_VFS），这是剩下的唯一一个。
+// 改成第一次用到时才装：把常量换成"取指针"的函数，用的地方调用它。glue 改版、找不到原文时构建失败，不悄悄失效
+const TRACE_REWRITES = [
+  [
+    'const __dbTraceToConsole = wasm.installFunction("i(ippp)", ',
+    'const __dbTraceToConsole = ((sig, fn) => { let ptr; return () => (ptr ??= wasm.installFunction(sig, fn)) })("i(ippp)", ',
+  ],
+  [
+    "capi.sqlite3_trace_v2(pDb, capi.SQLITE_TRACE_STMT, __dbTraceToConsole, pDb)",
+    "capi.sqlite3_trace_v2(pDb, capi.SQLITE_TRACE_STMT, __dbTraceToConsole(), pDb)",
+  ],
+]
+let traceRewritten = false
+const lazyTraceCallback = {
+  name: "lazy-trace-callback",
+  setup(b) {
+    b.onLoad({ filter: /[\\/]@sqlite\.org[\\/]sqlite-wasm[\\/]dist[\\/]index\.mjs$/ }, (args) => {
+      let source = readFileSync(args.path, "utf8")
+      for (const [from, to] of TRACE_REWRITES) {
+        const count = source.split(from).length - 1
+        if (count !== 1) throw new Error(`lazy-trace-callback: expected "${from}" once in ${args.path}, found ${count}`)
+        source = source.replace(from, to)
+      }
+      if (source.split("__dbTraceToConsole").length - 1 !== 2) {
+        throw new Error("lazy-trace-callback: __dbTraceToConsole is used somewhere else now; review the rewrite")
+      }
+      traceRewritten = true
+      return { contents: source, loader: "js" }
+    })
+  },
+}
 await build({
+  plugins: [lazyTraceCallback],
   entryPoints: [join(root, "src/index.ts")],
   bundle: true,
   platform: "neutral",
@@ -147,6 +180,9 @@ await build({
   format: "esm",
   outfile: join(dist, "index.js"),
 })
+
+// 过滤条件没匹配上 glue（比如包换了目录结构）时插件根本不会运行：同样要让构建失败
+if (!traceRewritten) throw new Error("lazy-trace-callback: the glue (@sqlite.org/sqlite-wasm dist/index.mjs) was not rewritten")
 
 // 3. wasm 和 manifest
 writeFileSync(join(assets, "sqlite3.wasm"), wasmBytes)
