@@ -1,3 +1,4 @@
+import vm from "node:vm"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { TextDecoder as ShimTextDecoder, TextEncoder as ShimTextEncoder, utf8Decode, utf8Encode } from "../src/shims"
 
@@ -69,6 +70,15 @@ describe("the injected TextEncoder / TextDecoder without native ones", () => {
     const written = new ShimTextEncoder().encodeInto("你好，SQLite 🎉", heap.subarray(100))
     expect(new ShimTextDecoder("utf-8").decode(heap.subarray(100, 100 + written.written))).toBe("你好，SQLite 🎉")
     expect(new ShimTextDecoder().decode(heap.buffer.slice(100, 100 + written.written))).toBe("你好，SQLite 🎉")
+  })
+
+  it("decodes an ArrayBuffer from another realm (WXWebAssembly's memory) instead of reading it as empty", () => {
+    withoutNative()
+    const bytes = nativeEncoder.encode("跨 realm 🎉")
+    const foreign = vm.runInContext(`new ArrayBuffer(${bytes.length})`, vm.createContext({})) as ArrayBuffer
+    expect(foreign instanceof ArrayBuffer).toBe(false)
+    new Uint8Array(foreign).set(bytes)
+    expect(new ShimTextDecoder().decode(foreign)).toBe("跨 realm 🎉")
   })
 
   it("refuses encodings other than UTF-8 instead of decoding them wrong", () => {

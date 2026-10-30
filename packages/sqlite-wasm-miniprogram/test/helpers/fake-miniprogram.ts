@@ -23,14 +23,38 @@ const assertPackagePath = (source: unknown) => {
   }
 }
 
+export interface FakeWXWebAssemblyOptions {
+  /**
+   * 模拟 iOS 真机：instantiate 给的导出函数 length 都是 0（不是参数个数）。
+   * "zero"：length 是 0，可以重新定义；"zero-locked"：length 是 0，也不能重新定义（只能包一层）
+   */
+  exportLength?: "zero" | "zero-locked"
+}
+
 /**
  * 模拟 WXWebAssembly：
  * - 在另一个 realm（node:vm 的 context）里实例化，导出的函数过不了本 realm 的 instanceof Function，和开发者工具里一样；
  * - instantiate / Module 只接受包内的 .wasm / .wasm.br 路径，不接受字节；
  * - 没有 RuntimeError。
  */
-export function createFakeWXWebAssembly(): MiniProgramWebAssembly & { moduleCalls: string[] } {
-  const realm = vm.runInContext("WebAssembly", vm.createContext({})) as typeof WebAssembly
+export function createFakeWXWebAssembly(options: FakeWXWebAssemblyOptions = {}): MiniProgramWebAssembly & { moduleCalls: string[] } {
+  const context = vm.createContext({})
+  const realm = vm.runInContext("WebAssembly", context) as typeof WebAssembly
+  // 另一个 realm 里的转发函数：rest 参数，length 是 0
+  const forward = vm.runInContext("(f) => (...args) => f(...args)", context) as (f: Function) => Function
+  const zeroLengthExports = (exports: WebAssembly.Exports): WebAssembly.Exports => {
+    const out: Record<string, WebAssembly.ExportValue> = {}
+    for (const [name, value] of Object.entries(exports)) {
+      if (typeof value !== "function") {
+        out[name] = value
+        continue
+      }
+      const fn = forward(value)
+      if (options.exportLength === "zero-locked") Object.defineProperty(fn, "length", { configurable: false, writable: false })
+      out[name] = fn as WebAssembly.ExportValue
+    }
+    return Object.freeze(out)
+  }
   const moduleCalls: string[] = []
   function Module(source: unknown) {
     assertPackagePath(source)
@@ -42,7 +66,9 @@ export function createFakeWXWebAssembly(): MiniProgramWebAssembly & { moduleCall
     instantiate(path: string, imports: object) {
       try {
         assertPackagePath(path)
-        return realm.instantiate(readPackageFile(path) as BufferSource, imports as WebAssembly.Imports)
+        const result = realm.instantiate(readPackageFile(path) as BufferSource, imports as WebAssembly.Imports)
+        if (!options.exportLength) return result
+        return result.then(({ instance, module }) => ({ instance: { exports: zeroLengthExports(instance.exports) }, module }))
       } catch (error) {
         return Promise.reject(error)
       }

@@ -1,8 +1,10 @@
 // 构建 sqlite-wasm-miniprogram：
-//   1. 用 esbuild 把 src/index.ts 连同官方 glue（@sqlite.org/sqlite-wasm 的 dist/index.mjs）打成 dist/index.js（只发 ESM），
-//      inject src/shims.ts，替换 glue 里的自由变量 URL / URLSearchParams / WebAssembly / TextEncoder / TextDecoder；
-//   2. 在 Node 里跑原版 glue，拦截 WebAssembly.Module(bytes)，采集 jsFuncToWasm 现场拼的回调桩模块，
+//   1. 在 Node 里跑原版 glue，拦截 WebAssembly.Module(bytes)，采集 jsFuncToWasm 现场拼的回调桩模块，
 //      存成 dist/assets/stubs/<hex>.wasm（采集负载 + glue 源码里能静态找到的签名字面量）；
+//      顺便读出 sqlite3.wasm 每个导出函数的参数个数（iOS 真机的导出函数 length 都是 0，运行时按它修正，src/shims.ts restoreArity）；
+//   2. 用 esbuild 把 src/index.ts 连同官方 glue（@sqlite.org/sqlite-wasm 的 dist/index.mjs）打成 dist/index.js（只发 ESM），
+//      inject src/shims.ts，替换 glue 里的自由变量 URL / URLSearchParams / WebAssembly / TextEncoder / TextDecoder，
+//      define 注入上一步读出的参数个数；
 //   3. 复制 sqlite3.wasm，生成 brotli 压缩的 sqlite3.wasm.br，写 dist/assets/manifest.json；
 //   4. tsc 生成类型声明。
 import { execFileSync } from "node:child_process"
@@ -25,25 +27,7 @@ const assets = join(dist, "assets")
 rmSync(dist, { recursive: true, force: true })
 mkdirSync(join(assets, "stubs"), { recursive: true })
 
-// 1. 打包
-const common = {
-  entryPoints: [join(root, "src/index.ts")],
-  bundle: true,
-  platform: "neutral",
-  // 取 sqlite-wasm 的 "import"（浏览器版 glue），不是 "node"
-  conditions: ["import"],
-  mainFields: ["module", "main"],
-  target: "es2020",
-  minify: true,
-  legalComments: "eof",
-  inject: [join(root, "src/shims.ts")],
-  // import.meta.url 只在 OPFS / Worker 分支里用到，小程序里不会走到
-  define: { "import.meta.url": '"file:///sqlite-wasm-miniprogram.js"' },
-  logLevel: "warning",
-}
-await build({ ...common, format: "esm", outfile: join(dist, "index.js") })
-
-// 2. 采集回调桩模块
+// 1. 采集回调桩模块和导出函数的参数个数
 const glueUrl = pathToFileURL(join(sqliteWasmDist, "index.mjs")).href
 const wasmBytes = readFileSync(join(sqliteWasmDist, "sqlite3.wasm"))
 const stubs = new Map()
@@ -60,15 +44,43 @@ const { default: sqlite3InitModule } = await import(glueUrl)
 // glue 初始化时尝试安装 OPFS VFS，在 Node 里装不上，会用 console.warn 打一段堆栈：采集时静音
 const consoleWarn = console.warn
 console.warn = () => {}
-const sqlite3 = await sqlite3InitModule({
-  instantiateWasm(imports, done) {
-    WebAssembly.instantiate(wasmBytes, imports).then((r) => done(r.instance, r.module))
-    return {}
-  },
-  print() {},
-  printErr() {},
+// 导出函数的参数个数：Node 里 wasm 导出函数的 length 就是参数个数。只记不为 0 的（为 0 的在 iOS 上本来就对），按名字排序
+let exportArity = {}
+// instantiateWasm 钩子里出错时 glue 的初始化 Promise 永远不结束：从这里 reject，构建报错退出而不是挂住
+let instantiateFailed
+const failure = new Promise((_, reject) => {
+  instantiateFailed = reject
 })
+const sqlite3 = await Promise.race([
+  sqlite3InitModule({
+    instantiateWasm(imports, done) {
+      WebAssembly.instantiate(wasmBytes, imports)
+        .then((r) => {
+          exportArity = Object.fromEntries(
+            Object.entries(r.instance.exports)
+              .filter(([, value]) => typeof value === "function" && value.length > 0)
+              .map(([name, fn]) => [name, fn.length])
+              .sort(([a], [b]) => (a < b ? -1 : 1)),
+          )
+          done(r.instance, r.module)
+        })
+        .catch(instantiateFailed)
+      return {}
+    },
+    print() {},
+    printErr() {},
+  }),
+  failure,
+])
 console.warn = consoleWarn
+// 参数个数表是空的或不对时（比如升级后的 glue 不再走 instantiateWasm 钩子），iOS 上的修正会悄悄失效，
+// 而 Node 里 length 本来就对，测试照样通过：在这里拦住
+if (exportArity.sqlite3_aggregate_context !== 2) {
+  throw new Error(
+    `export arities not collected (${Object.keys(exportArity).length} entries, sqlite3_aggregate_context: ` +
+      `${exportArity.sqlite3_aggregate_context}): did the glue stop calling instantiateWasm?`,
+  )
+}
 // 采集负载：cross-sqlite-client 的 miniprogram 适配器用到的能力
 {
   const { capi, oo1, wasm } = sqlite3
@@ -114,6 +126,28 @@ for (const signature of signatures) {
 globalThis.WebAssembly = Object.getPrototypeOf(globalThis.WebAssembly)
 for (const [hex, bytes] of stubs) writeFileSync(join(assets, "stubs", `${hex}.wasm`), bytes)
 
+// 2. 打包
+await build({
+  entryPoints: [join(root, "src/index.ts")],
+  bundle: true,
+  platform: "neutral",
+  // 取 sqlite-wasm 的 "import"（浏览器版 glue），不是 "node"
+  conditions: ["import"],
+  mainFields: ["module", "main"],
+  target: "es2020",
+  minify: true,
+  legalComments: "eof",
+  inject: [join(root, "src/shims.ts")],
+  define: {
+    // import.meta.url 只在 OPFS / Worker 分支里用到，小程序里不会走到
+    "import.meta.url": '"file:///sqlite-wasm-miniprogram.js"',
+    __SQLITE_EXPORT_ARITY__: JSON.stringify(exportArity),
+  },
+  logLevel: "warning",
+  format: "esm",
+  outfile: join(dist, "index.js"),
+})
+
 // 3. wasm 和 manifest
 writeFileSync(join(assets, "sqlite3.wasm"), wasmBytes)
 const br = brotliCompressSync(wasmBytes, {
@@ -129,6 +163,7 @@ const manifest = {
     "sqlite3.wasm.br": { bytes: br.byteLength, sha256: sha256(br) },
   },
   stubs: [...stubs.keys()].sort(),
+  exportArity,
   signatures,
 }
 writeFileSync(join(assets, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`)
@@ -153,5 +188,6 @@ console.log(
   `sqlite-wasm-miniprogram: sqlite ${manifest.sqlite} (sqlite-wasm ${sqliteWasmVersion}); ` +
     `${stubs.size} callback stubs (${fromWorkload} from the workload, ${signatures.length} signatures scanned` +
     `${skipped.length ? `, ${skipped.length} skipped: ${skipped.join("; ")}` : ""}); ` +
+    `${Object.keys(exportArity).length} export arities; ` +
     `sqlite3.wasm ${wasmBytes.byteLength} B, .br ${br.byteLength} B`,
 )

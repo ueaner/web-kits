@@ -23,6 +23,7 @@ The official glue can't run in a mini program as is:
 | --------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | No global `WebAssembly`, only `WXWebAssembly`; no `URL` / `URLSearchParams`; on devices no `TextEncoder` / `TextDecoder` either (DevTools has them) | Shims injected **at bundle time** (esbuild `inject`): each module is wrapped, so globals assigned at runtime aren't visible. The text codecs use the native ones when present, a pure-JS UTF-8 implementation otherwise |
 | `WXWebAssembly` instances come from another realm: exported functions fail `instanceof Function`, table errors fail `instanceof TypeError`          | Exported functions get this realm's `Function.prototype`; table/memory errors are re-thrown as this realm's types                                                                                                       |
+| On iOS devices, `WXWebAssembly`'s exported functions report `length === 0`, while the glue checks `length` against each function's parameter count  | The build reads every export's parameter count from `sqlite3.wasm`; `initSqlite3` restores `length` on the exports (a forwarding wrapper where it can't be redefined)                                                   |
 | `WXWebAssembly.instantiate` / `Module` only accept a `.wasm` / `.wasm.br` **path inside the package**, never bytes                                  | The glue builds tiny per-signature wasm modules for JS callbacks; they're prebuilt into `stubs/<hex>.wasm` and looked up by content                                                                                     |
 
 ## Install
@@ -89,7 +90,7 @@ If initialization fails, the next call tries again.
   that set throws `missing prebuilt callback stub …`; check `stubs` in `manifest.json` before relying on callback APIs.
 - **No OPFS / Worker APIs**: there's no persistent VFS in a mini program. Persist by exporting the database
   (that's what `cross-sqlite-client`'s adapter does).
-- Verified in the WeChat DevTools simulator and on an Android device (Android 14, WeChat 8.0.79, base library 3.17.4): opening, writing, and reading back after re-entering the mini game. **Not yet verified on iOS.**
+- Verified in the WeChat DevTools simulator and on an Android device (Android 14, WeChat 8.0.79, base library 3.17.4): opening, writing, and reading back after re-entering the mini game. **Not yet verified on iOS devices** (the `length === 0` behavior of iOS is covered by a simulated runtime in the tests).
 
 ## Testing
 

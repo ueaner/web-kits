@@ -82,6 +82,33 @@ export function adoptFunctions(exports: Record<string, unknown>): Record<string,
   return exports
 }
 
+/**
+ * iOS 真机上 WXWebAssembly 导出的函数 length 都是 0，不是参数个数。glue 的 xWrap / xCall 按 length 校验参数个数，
+ * 初始化时就抛 "sqlite3_aggregate_context() requires 0 argument(s)."。按构建时从 sqlite3.wasm 读出的参数个数修正：
+ * 能重新定义 length 就直接改（调用开销不变），改不了就包一层转发、给包装函数定义 length。
+ * 只修正 length 是 0 的（iOS 的症状）：宿主报了非 0 的 length（Android、开发者工具）就信宿主的，
+ * 不拿构建时的表去覆盖（包内复制的 sqlite3.wasm 和 glue 版本对不上时，宿主的才是真的）。
+ */
+export function restoreArity(exports: Record<string, unknown>, arity: Readonly<Record<string, number>>): Record<string, unknown> {
+  for (const [name, length] of Object.entries(arity)) {
+    const fn = exports[name]
+    if (typeof fn !== "function" || fn.length !== 0) continue
+    try {
+      Object.defineProperty(fn, "length", { value: length, configurable: true })
+    } catch {
+      // 宿主函数的 length 不可配置：下面包一层
+    }
+    if (fn.length === length) continue
+    const forward = function (this: unknown, ...args: unknown[]) {
+      return Reflect.apply(fn, this, args)
+    }
+    Object.defineProperty(forward, "length", { value: length })
+    Object.defineProperty(forward, "name", { value: name })
+    exports[name] = forward
+  }
+  return exports
+}
+
 function toHex(bytes: ArrayLike<number>): string {
   let hex = ""
   for (let i = 0; i < bytes.length; i++) hex += (bytes[i]! < 16 ? "0" : "") + bytes[i]!.toString(16)
@@ -256,9 +283,10 @@ export function utf8Decode(bytes: Uint8Array): string {
 const toBytes = (input?: ArrayBuffer | ArrayBufferView): Uint8Array =>
   !input
     ? new Uint8Array(0)
-    : input instanceof ArrayBuffer
-      ? new Uint8Array(input)
-      : new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
+    : ArrayBuffer.isView(input)
+      ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
+      : // 不用 instanceof ArrayBuffer：另一个 realm（WXWebAssembly 的内存）的 ArrayBuffer 过不了，会被当成视图读成空的
+        new Uint8Array(input)
 
 const isUtf8 = (label: string) => /^\s*(unicode-1-1-)?utf-?8\s*$/i.test(label)
 
