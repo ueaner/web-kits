@@ -1,5 +1,23 @@
 # pending-task-kit
 
+## 0.7.0
+
+### Minor Changes
+
+- 4cbf5e1: The task store no longer uses zustand — it's a small built-in store, and `zustand` is dropped from `peerDependencies` (install just `pending-task-kit` now).
+
+  **Breaking:** `PendingTaskStore` is no longer a zustand `UseBoundStore`. It has `getState()` (unchanged — `store.getState().addTask(...)`/`pruneTasksBy(...)` etc. keep working), `subscribe((state, previousState) => ...)` returning an unsubscribe function, plus `storageKey`/`hasUnpersistedWrites`/`writeTasks` as before. Calling the store itself as a hook (`store((s) => s.tasks)`) or passing it to zustand's `useStore`/`useShallow` no longer works — use the new `usePendingTasks(store, select?)` from `pending-task-kit/react` instead: an array result equal element-by-element to the previous one is returned as the same array (so an inline filter is stable), and under SSR it renders an empty list until hydration, matching the server markup. The rest of zustand's store API is gone too: `setState` (it bypassed the store's write-failure tracking anyway), `getInitialState`, and the `persist` middleware's `store.persist.*` (`rehydrate`/`clearStorage`/`hasHydrated`/`onFinishHydration` — hydration is now synchronous at creation, and `clearAllTasks()` replaces `clearStorage()`); the type no longer extends zustand's `StoreApi`. `subscribe` changed semantics too: a listener's `previousState` is the last snapshot _that listener_ received (so a diff never misses a change when another listener writes re-entrantly — the newest write wins and every listener ends on it); a listener unsubscribed mid-notification isn't called again; a throwing listener is rethrown on a microtask instead of aborting the write.
+
+  Cross-tab task-list sync moved from `PendingTaskPoller` into the store: while it has any subscriber (`usePendingTasks`, a running poller, your own `subscribe`) it adopts other tabs' writes, so a tab that only renders the list no longer needs a poller to stay current. It now reads the current persisted value instead of the event's possibly stale `newValue`, and no longer writes the adopted value back to localStorage — previously a stale event could overwrite another tab's newer write.
+
+  The persisted localStorage entry keeps the exact `{ state: { tasks }, version: 1 }` shape zustand's `persist` wrote, so existing users' tasks survive the upgrade. With `localStorage` entirely unavailable (SSR, storage disabled) mutators now keep building on the in-memory list instead of rebuilding from an always-empty persisted read, and zustand's own `console.warn` on that failure is gone.
+
+- d3c0d7c: `expired` now reaches `onResult` (plus the result relay and DOM event) like every other outcome, instead of being dropped with no signal at all. It arrives with `detail.silent: true` by default — new handler option `silentOnExpiry` (default `true`) controls that, so an `onResult` that already honors `detail.silent` shows no extra toast, while cleanup that depends on a task concluding (clearing a "processing" state, refreshing a list) now runs for expired tasks too. Set `silentOnExpiry: false` to dispatch it with `silent: false`.
+
+  **Behavior change:** an `onResult` that ignores `detail.silent` and treats any non-`success` status as a failure will now also see `expired`; check `detail.status`/`detail.silent` if that's not wanted.
+
+  With `crossTabPollLeaderElection` on, expiring a task now requires poll leadership (previously it was leaderless local bookkeeping), so only the leader tab expires it and relays the result, rather than every open tab dispatching it; as with `success`/`failure`, a strict once-only guarantee still needs `claimResultOnce`.
+
 ## 0.6.0
 
 ### Minor Changes
