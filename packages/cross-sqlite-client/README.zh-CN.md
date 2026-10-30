@@ -357,12 +357,12 @@ const adapter = createMiniProgramAdapter({
 const client = await createDbClient({ name: "app", adapter, migrations, migrationOptions: { executor: transactionalExecutor } })
 ```
 
-| 选项        | 说明                                                                                                                                               |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sqlite3`   | 返回已初始化的 `sqlite3` 对象。第一次 `initialize()` 时才调用；失败时 `initialize()` 失败，可以重试。                                              |
-| `fs`        | 宿主文件系统：`wx.getFileSystemManager()`（或 `Taro.getFileSystemManager()`）。用到 `mkdir`、`readFile`、`writeFile`、`rename`、`unlink`、`stat`。 |
-| `directory` | 数据库文件所在目录，通常在 `wx.env.USER_DATA_PATH` 下（与本地缓存文件共用 200 MB）。不存在时创建。                                                 |
-| `logger`    | 诊断输出（从备份恢复、发现损坏文件）。默认 `console`。                                                                                             |
+| 选项        | 说明                                                                                                                                                                                                                |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sqlite3`   | 返回已初始化的 `sqlite3` 对象。第一次 `initialize()` 时才调用；失败时 `initialize()` 失败，可以重试。                                                                                                               |
+| `fs`        | 宿主文件系统：`wx.getFileSystemManager()`（或 `Taro.getFileSystemManager()`）。用到 `mkdir`、`readFile`、`writeFile`、`rename`、`unlink`、`stat`，有 `readdir` 时也用它（避开注定失败、会被宿主打到日志里的调用）。 |
+| `directory` | 数据库文件所在目录，通常在 `wx.env.USER_DATA_PATH` 下（与本地缓存文件共用 200 MB）。不存在时创建。                                                                                                                  |
+| `logger`    | 诊断输出（从备份恢复、发现损坏文件）。默认 `console`。                                                                                                                                                              |
 
 数据怎么存：
 

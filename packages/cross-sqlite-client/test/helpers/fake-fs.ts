@@ -1,6 +1,6 @@
 import type { MiniProgramFileSystem } from "../../src/adapters/miniprogram-files"
 
-type Operation = "mkdir" | "readFile" | "writeFile" | "rename" | "unlink" | "stat"
+type Operation = "mkdir" | "readFile" | "writeFile" | "rename" | "unlink" | "stat" | "readdir"
 
 interface Fault {
   operation: Operation
@@ -16,6 +16,8 @@ interface Fault {
 export interface FakeFileSystem extends MiniProgramFileSystem {
   files: Map<string, Uint8Array>
   calls: Record<Operation, number>
+  /** 失败了的调用（"<方法> <路径>"），注入的故障也算：真机上宿主会把每次失败打到日志里 */
+  failures: string[]
   /** 下一次匹配的调用失败 */
   failNext(operation: Operation, options?: { path?: RegExp; errMsg?: string }): void
   /** 当前目录下的文件名（按名字排序），方便断言 */
@@ -24,11 +26,20 @@ export interface FakeFileSystem extends MiniProgramFileSystem {
   fork(): FakeFileSystem
 }
 
-export function createFakeFileSystem(shared?: { files: Map<string, Uint8Array>; dirs: Set<string> }): FakeFileSystem {
+export interface FakeFileSystemOptions {
+  /** false：模拟没有 readdir 的宿主（默认有，和 wx.getFileSystemManager() 一样） */
+  readdir?: boolean
+}
+
+export function createFakeFileSystem(
+  shared?: { files: Map<string, Uint8Array>; dirs: Set<string> },
+  options: FakeFileSystemOptions = {},
+): FakeFileSystem {
   const files = shared?.files ?? new Map<string, Uint8Array>()
   const dirs = shared?.dirs ?? new Set<string>()
   const faults: Fault[] = []
-  const calls: Record<Operation, number> = { mkdir: 0, readFile: 0, writeFile: 0, rename: 0, unlink: 0, stat: 0 }
+  const calls: Record<Operation, number> = { mkdir: 0, readFile: 0, writeFile: 0, rename: 0, unlink: 0, stat: 0, readdir: 0 }
+  const failures: string[] = []
 
   const parentOf = (path: string) => path.slice(0, path.lastIndexOf("/"))
 
@@ -43,6 +54,7 @@ export function createFakeFileSystem(shared?: { files: Map<string, Uint8Array>; 
     queueMicrotask(() => {
       if (index >= 0) {
         const [fault] = faults.splice(index, 1)
+        failures.push(`${operation} ${path}`)
         cb.fail({ errMsg: `${operation}:fail ${fault!.errMsg}` })
         return
       }
@@ -50,6 +62,7 @@ export function createFakeFileSystem(shared?: { files: Map<string, Uint8Array>; 
       try {
         result = body()
       } catch (error) {
+        failures.push(`${operation} ${path}`)
         cb.fail({ errMsg: `${operation}:fail ${(error as Error).message}` })
         return
       }
@@ -61,20 +74,35 @@ export function createFakeFileSystem(shared?: { files: Map<string, Uint8Array>; 
     if (!dirs.has(parentOf(path))) throw new Error(`no such file or directory "${parentOf(path)}"`)
   }
 
+  const readdir: Pick<MiniProgramFileSystem, "readdir"> =
+    options.readdir === false
+      ? {}
+      : {
+          readdir({ dirPath, success, fail }) {
+            run("readdir", dirPath, { success, fail }, () => {
+              if (!dirs.has(dirPath)) throw new Error(`no such file or directory "${dirPath}"`)
+              const files = [...filesIn(dirPath)]
+              return { files }
+            })
+          },
+        }
+  function* filesIn(directory: string) {
+    for (const p of files.keys()) if (parentOf(p) === directory) yield p.slice(directory.length + 1)
+  }
+
   return {
     files,
     calls,
+    failures,
+    ...readdir,
     fork() {
-      return createFakeFileSystem({ files, dirs })
+      return createFakeFileSystem({ files, dirs }, options)
     },
     failNext(operation, options = {}) {
       faults.push({ operation, path: options.path, errMsg: options.errMsg ?? "injected failure" })
     },
     list(directory) {
-      return [...files.keys()]
-        .filter((p) => parentOf(p) === directory)
-        .map((p) => p.slice(directory.length + 1))
-        .sort()
+      return [...filesIn(directory)].sort()
     },
     mkdir({ dirPath, success, fail }) {
       run("mkdir", dirPath, { success, fail }, () => {

@@ -520,12 +520,12 @@ const adapter = createMiniProgramAdapter({
 const client = await createDbClient({ name: "app", adapter, migrations, migrationOptions: { executor: transactionalExecutor } })
 ```
 
-| Option      | Meaning                                                                                                                                                  |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sqlite3`   | Returns an initialized `sqlite3` object. Called on the first `initialize()`; if it rejects, `initialize()` rejects and can be retried.                   |
-| `fs`        | The host file system: `wx.getFileSystemManager()` (or `Taro.getFileSystemManager()`). Uses `mkdir`, `readFile`, `writeFile`, `rename`, `unlink`, `stat`. |
-| `directory` | Where the database files live, usually under `wx.env.USER_DATA_PATH` (shared 200 MB quota). Created if missing.                                          |
-| `logger`    | Diagnostics (restored from backup, corrupt file found). Defaults to `console`.                                                                           |
+| Option      | Meaning                                                                                                                                                                                                                                           |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sqlite3`   | Returns an initialized `sqlite3` object. Called on the first `initialize()`; if it rejects, `initialize()` rejects and can be retried.                                                                                                            |
+| `fs`        | The host file system: `wx.getFileSystemManager()` (or `Taro.getFileSystemManager()`). Uses `mkdir`, `readFile`, `writeFile`, `rename`, `unlink`, `stat`, and `readdir` when present (to avoid calls that are bound to fail, which the host logs). |
+| `directory` | Where the database files live, usually under `wx.env.USER_DATA_PATH` (shared 200 MB quota). Created if missing.                                                                                                                                   |
+| `logger`    | Diagnostics (restored from backup, corrupt file found). Defaults to `console`.                                                                                                                                                                    |
 
 How it stores data:
 

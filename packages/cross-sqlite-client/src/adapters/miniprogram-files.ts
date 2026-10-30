@@ -21,6 +21,12 @@ export interface MiniProgramFileSystem {
   rename(options: { oldPath: string; newPath: string } & Callbacks): void
   unlink(options: { filePath: string } & Callbacks): void
   stat(options: { path: string } & Callbacks<{ stats: { size: number } }>): void
+  /**
+   * 可选：列出目录里的文件名。有它时打开数据库先列一次目录：目录已经在就不 mkdir，没有残留的 .tmp 就不去删——
+   * 宿主（微信）会把每次失败的文件调用打到日志里，即使失败在预料之中（"unlink:fail no such file or directory …"），
+   * 原来每次启动都有这两条。没有时照常调用，再忽略"不存在""已存在"的失败
+   */
+  readdir?(options: { dirPath: string } & Callbacks<{ files: string[] }>): void
 }
 
 const REQUIRED_METHODS = ["mkdir", "readFile", "writeFile", "rename", "unlink", "stat"] as const
@@ -135,10 +141,38 @@ export function createSnapshotFiles(fs: MiniProgramFileSystem, directory: string
   const write = (filePath: string, bytes: Uint8Array) =>
     call(`writeFile ${filePath}`, (cb) => fs.writeFile({ filePath, data: toArrayBuffer(bytes), ...cb }))
 
+  const makeDirectory = () =>
+    call(`mkdir ${dir}`, (cb) => fs.mkdir({ dirPath: dir, recursive: true, ...cb })).catch((error) => {
+      if (!isAlreadyExists((error as Error).cause)) throw error
+    })
+
+  /**
+   * 打开时目录里有没有 .tmp：true / false 是 readdir 列出来的，null 是不知道（宿主没有 readdir，或者列目录失败）。
+   * 列目录只用来跳过"判断错了也无害"的调用：目录在就不 mkdir；没有 .tmp 就不去删它（真有的话，下次保存照样覆盖它）。
+   * 读当前文件和 .bak、保存时的轮换照常调用，不看列表——列表万一不准（某个宿主的 readdir 有怪癖），后果只是宿主日志里
+   * 多一行失败，不会把已有的库当成新库、跳过备份。这两类调用注定失败的情况只在第一次安装、第一次保存时各出现一次
+   */
+  let temporaryListed: boolean | null = null
+
+  /** 列目录：readdir 成功说明目录在，不再 mkdir；没有 readdir 或失败（第一次打开时目录还不存在）就照老办法 mkdir */
+  const listDirectory = async (): Promise<void> => {
+    const readdir = fs.readdir
+    if (typeof readdir === "function") {
+      try {
+        const { files } = await call<{ files: unknown }>(`readdir ${dir}`, (cb) => readdir.call(fs, { dirPath: dir, ...cb }))
+        temporaryListed = Array.isArray(files) ? files.includes(temporary.slice(dir.length + 1)) : null
+        return
+      } catch (error) {
+        // 照老办法建目录。目录不存在（第一次打开）的话刚建的目录里不会有 .tmp；判断错了也只是留着一个下次保存会覆盖的 .tmp
+        if (isMissing((error as Error).cause)) temporaryListed = false
+      }
+    }
+    await makeDirectory()
+  }
+
   let directoryReady: Promise<void> | null = null
   const ensureDirectory = (): Promise<void> => {
-    directoryReady ??= call(`mkdir ${dir}`, (cb) => fs.mkdir({ dirPath: dir, recursive: true, ...cb })).catch((error) => {
-      if (isAlreadyExists((error as Error).cause)) return
+    directoryReady ??= listDirectory().catch((error: unknown) => {
       directoryReady = null
       throw error
     })
@@ -156,7 +190,7 @@ export function createSnapshotFiles(fs: MiniProgramFileSystem, directory: string
     async load<T>(tryOpen: (bytes: Uint8Array) => T | undefined, dispose: (value: T) => void) {
       await ensureDirectory()
       // .tmp 没有完成替换（保存时在改名之前被打断），里面的写入当时也没有返回成功，直接丢掉
-      await removeIfPresent(temporary)
+      if (temporaryListed !== false) await removeIfPresent(temporary)
 
       const currentBytes = await readIfPresent(current)
       if (currentBytes) {

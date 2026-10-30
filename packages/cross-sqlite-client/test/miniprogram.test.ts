@@ -419,3 +419,122 @@ describe("errors and saving", () => {
     expect(fs.calls.writeFile).toBe(writesBefore)
   })
 })
+
+describe("no failing host calls in normal use", () => {
+  // 宿主（微信）会把每次失败的文件调用打到日志里，即使适配器接住了它（"unlink:fail no such file or directory … .tmp"）：
+  // 正常打开、保存不该去碰不存在的文件，也不该去建已经存在的目录
+  it("on a fresh install, fails only the calls that find nothing there yet, once", async () => {
+    const fs = createFakeFileSystem()
+    const { client } = await openClient(fs)
+    await client.execute("INSERT INTO items (label) VALUES ('a')")
+    await client.execute("INSERT INTO items (label) VALUES ('b')")
+    await client.close()
+    // 读当前文件和 .bak、保存时轮换 .bak 照常调用（不靠目录列表判断，列表不准也不会把已有的库当成新库）：
+    // 第一次保存时还没有当前文件和 .bak，第二次保存时还没有 .bak，之后就都有了
+    expect(fs.failures).toEqual([
+      `readdir ${DIR}`,
+      `readFile ${DB}`,
+      `readFile ${DB}.bak`,
+      `unlink ${DB}.bak`,
+      `rename ${DB}`,
+      `unlink ${DB}.bak`,
+    ])
+  })
+
+  it("makes none when reopening and saving an existing database", async () => {
+    const fs = createFakeFileSystem()
+    const { client } = await openClient(fs)
+    await client.execute("INSERT INTO items (label) VALUES ('a')")
+    await client.close()
+
+    const restarted = fs.fork()
+    const { client: reopened } = await openClient(restarted)
+    await reopened.execute("INSERT INTO items (label) VALUES ('b')")
+    await reopened.execute("INSERT INTO items (label) VALUES ('c')")
+    expect(await labels(reopened)).toEqual(["a", "b", "c"])
+    await reopened.close()
+    expect(restarted.failures).toEqual([])
+  })
+
+  it("still cleans up a leftover .tmp found in the directory", async () => {
+    const fs = createFakeFileSystem()
+    const { client } = await openClient(fs)
+    await client.execute("INSERT INTO items (label) VALUES ('a')")
+    await client.close()
+    fs.files.set(`${DB}.tmp`, new Uint8Array(10))
+
+    const restarted = fs.fork()
+    const { client: reopened } = await openClient(restarted)
+    expect(await labels(reopened)).toEqual(["a"])
+    expect(restarted.list(DIR)).toEqual(["app.sqlite", "app.sqlite.bak"])
+    expect(restarted.failures).toEqual([])
+  })
+
+  it("works the old way on a host without readdir", async () => {
+    const fs = createFakeFileSystem(undefined, { readdir: false })
+    const { client } = await openClient(fs)
+    await client.execute("INSERT INTO items (label) VALUES ('a')")
+    await client.close()
+
+    const { client: reopened } = await openClient(fs.fork())
+    expect(await labels(reopened)).toEqual(["a"])
+  })
+})
+
+describe("listing the directory", () => {
+  it("falls back to the old way when readdir fails for another reason", async () => {
+    const fs = createFakeFileSystem()
+    const { client } = await openClient(fs)
+    await client.execute("INSERT INTO items (label) VALUES ('a')")
+    await client.close()
+
+    const restarted = fs.fork()
+    restarted.failNext("readdir", { errMsg: "permission denied" })
+    const { client: reopened } = await openClient(restarted)
+    await reopened.execute("INSERT INTO items (label) VALUES ('b')")
+    expect(await labels(reopened)).toEqual(["a", "b"])
+  })
+
+  it("keeps the database when readdir says the directory is missing but it isn't", async () => {
+    const fs = createFakeFileSystem()
+    const { client } = await openClient(fs)
+    await client.execute("INSERT INTO items (label) VALUES ('a')")
+    await client.close()
+
+    const restarted = fs.fork()
+    restarted.failNext("readdir", { errMsg: "no such file or directory" })
+    const { client: reopened } = await openClient(restarted)
+    expect(await labels(reopened)).toEqual(["a"])
+    await reopened.execute("INSERT INTO items (label) VALUES ('b')")
+    await reopened.close()
+    expect(await labels((await openClient(fs.fork())).client)).toEqual(["a", "b"])
+  })
+
+  it.each([
+    ["no file list", () => ({ files: undefined })],
+    ["full paths", (dir: string, names: string[]) => ({ files: names.map((n) => `wxfile://usr${dir}/${n}`) })],
+  ])("keeps the database when readdir returns %s", async (_, answer) => {
+    const fs = createFakeFileSystem()
+    const { client } = await openClient(fs)
+    await client.execute("INSERT INTO items (label) VALUES ('a')")
+    await client.close()
+
+    const restarted = fs.fork()
+    const quirky = {
+      ...restarted,
+      readdir: ({ dirPath, success }: { dirPath: string; success: (r: never) => void }) =>
+        queueMicrotask(() => success(answer(dirPath, restarted.list(dirPath)) as never)),
+    } as FakeFileSystem
+    const { client: reopened } = await openClient(quirky)
+    expect(await labels(reopened)).toEqual(["a"])
+    await reopened.execute("INSERT INTO items (label) VALUES ('b')")
+    expect(await labels(reopened)).toEqual(["a", "b"])
+  })
+
+  it("cleans up a .tmp that a failed write may have left behind", async () => {
+    const { fs, client } = await openClient()
+    fs.failNext("stat")
+    await expect(client.execute("INSERT INTO items (label) VALUES ('a')")).rejects.toBeInstanceOf(DbPersistenceError)
+    expect(fs.list(DIR)).not.toContain("app.sqlite.tmp")
+  })
+})
