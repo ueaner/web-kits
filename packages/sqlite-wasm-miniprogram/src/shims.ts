@@ -5,11 +5,15 @@
 // 这个文件里不要写自由变量 WebAssembly / URL / URLSearchParams / TextEncoder / TextDecoder：它自己也会被 inject 处理
 // （要用原生实现时写 globalThis.TextDecoder）。
 
-/** 小程序的 WebAssembly 运行时（WXWebAssembly）：instantiate / Module 只接受包内的 .wasm / .wasm.br 路径 */
+/**
+ * 小程序的 WebAssembly 运行时（WXWebAssembly）：instantiate / Module 只接受包内的 .wasm / .wasm.br 路径。
+ * 微信文档只承诺 instantiate、Memory、Table（和 Global）；有的 iOS 环境没有 Module（在一台 iPhone 14 Pro 上见过：iOS 18.5、微信 8.0.56、基础库 3.7.12）。
+ * Module / Instance 只在把 JS 回调装进函数表时用到（回调桩模块），初始化和读写用不到
+ */
 export interface MiniProgramWebAssembly {
   instantiate(path: string, imports: object): Promise<unknown>
-  Module: unknown
-  Instance: unknown
+  Module?: unknown
+  Instance?: unknown
   Memory: unknown
   Table: unknown
   RuntimeError?: unknown
@@ -115,12 +119,23 @@ function toHex(bytes: ArrayLike<number>): string {
   return hex
 }
 
+/** 回调要用、运行时却没有的构造函数：报清楚是哪一个，而不是 glue 里一个看不懂的 "is not a constructor" */
+function callbackSupport<T>(name: "Module" | "Instance"): T {
+  const value = (runtime() as unknown as Record<string, unknown>)[name]
+  if (typeof value !== "function") {
+    throw new Error(
+      `[sqlite-wasm-miniprogram] this WXWebAssembly has no ${name}, so SQLite cannot call back into JS here (create_function, hooks, trace, JS VFSes …)`,
+    )
+  }
+  return value as T
+}
+
 /**
  * glue 的 jsFuncToWasm 把 JS 回调放进 wasm 函数表时，会按签名现场拼一个小模块（new WebAssembly.Module(bytes)）。
  * 小程序只能从包内文件创建模块，所以按内容映射到构建时预先生成的 stubs/<hex>.wasm。
  */
 function ShimModule(source: unknown): unknown {
-  const wa = runtime() as unknown as { Module: new (source: unknown) => unknown }
+  const wa = { Module: callbackSupport<new (source: unknown) => unknown>("Module") }
   if (typeof source === "string") return new wa.Module(source)
   const bytes = source instanceof Uint8Array ? source : new Uint8Array(source as ArrayBuffer)
   const path = `${config!.stubsDir}/${toHex(bytes)}.wasm`
@@ -135,7 +150,7 @@ function ShimModule(source: unknown): unknown {
 }
 
 function ShimInstance(module: unknown, imports: object): unknown {
-  const wa = runtime() as unknown as { Instance: new (module: unknown, imports: object) => { exports: Record<string, unknown> } }
+  const wa = { Instance: callbackSupport<new (module: unknown, imports: object) => { exports: Record<string, unknown> }>("Instance") }
   const instance = new wa.Instance(module, imports)
   // 导出对象本身是冻结的：拷一份普通对象，顺便修正函数的原型
   return { exports: adoptFunctions({ ...instance.exports }) }

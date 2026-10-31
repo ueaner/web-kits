@@ -87,6 +87,9 @@ const client = await createDbClient({ name: "app", adapter, migrations, migratio
   带 JS 回调的 `capi.sqlite3_exec`、JS 实现的 VFS 和虚拟表。JS 调 wasm 的路径不受影响：建表、读写、事务、`db.exec({ callback })`
   （它在 JS 里逐行 `step`）、导出和 `sqlite3_deserialize` 都能用。为此初始化时不装任何回调：JS 实现的 VFS（kvvfs 的 JS 方法、OPFS 系列）
   关掉了，`oo1.DB` 的 SQL trace 回调改成用 `"t"` 打开时才装（[web-kits#10](https://github.com/ueaner/web-kits/issues/10)）。
+- **`Module` / `Instance` 可以没有**：微信文档只承诺 `WXWebAssembly` 的 `instantiate`、`Memory`、`Table`，有的 iOS 环境没有 `Module`
+  （在一台 iPhone 14 Pro 上见过：iOS 18.5、微信 8.0.56、基础库 3.7.12；一台 iOS 26 的 iPhone 16 Pro 上有。取决于其中哪一项还不知道）。`initSqlite3` 只要 `instantiate`、`Memory`、`Table`；`Module` 和
+  `Instance` 只在装 JS 回调时用到，缺了的话装回调时抛 `this WXWebAssembly has no Module …`。
 - **回调签名**（Android、开发者工具）：交给 SQLite 的 JS 函数需要它对应 wasm 签名的预生成桩模块。构建覆盖了
   glue 用到的回调、`cross-sqlite-client` 用到的能力，以及 glue 源码里能找到的全部签名字面量（共 13 个桩模块）。
   清单以外的签名会抛出 `missing prebuilt callback stub …`；要用回调类 API 之前，先看 `manifest.json` 里的 `stubs`。

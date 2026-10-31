@@ -94,6 +94,10 @@ If initialization fails, the next call tries again.
   `sqlite3_deserialize` all work. To get there, init installs no callback: the JS-implemented VFSes (kvvfs's JS methods,
   the OPFS family) are left out, and `oo1.DB`'s SQL trace callback is installed only when a database is opened with
   `"t"` ([web-kits#10](https://github.com/ueaner/web-kits/issues/10)).
+- **`Module` / `Instance` are optional.** WeChat documents only `instantiate`, `Memory` and `Table` on `WXWebAssembly`,
+  and some iOS environments have no `Module` (seen on an iPhone 14 Pro with iOS 18.5, WeChat 8.0.56 and base library 3.7.12; an iPhone 16 Pro with iOS 26 has it — which of these decides is not known).
+  `initSqlite3` needs only `instantiate`, `Memory` and `Table`; `Module` and `Instance` are used only to install a JS
+  callback, which then throws `this WXWebAssembly has no Module …`.
 - **Callback signatures** (Android, DevTools). A JS function handed to SQLite needs a
   prebuilt stub for its wasm signature. The build covers the callbacks the glue uses, what
   `cross-sqlite-client` uses, and every signature literal found in the glue's source (13 stubs). A signature outside

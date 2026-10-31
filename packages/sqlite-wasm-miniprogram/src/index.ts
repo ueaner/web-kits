@@ -57,7 +57,8 @@ export function initSqlite3(options: InitSqlite3Options): Promise<Sqlite3Static>
   const promise = new Promise<Sqlite3Static>((resolve, reject) => {
     // 参数检查也在这里面：同步抛的错变成 rejected Promise，调用方的 .catch() 接得住
     const { webAssembly } = options
-    const missing = (["instantiate", "Module", "Instance", "Memory", "Table"] as const).filter(
+    // 只查初始化和读写要用的；Module / Instance 是回调才用的，缺了到用回调时再报（shims.ts 的 callbackSupport）
+    const missing = (["instantiate", "Memory", "Table"] as const).filter(
       (name) => typeof (webAssembly as unknown as Record<string, unknown> | undefined)?.[name] !== "function",
     )
     if (missing.length > 0) throw new Error(`[sqlite-wasm-miniprogram] webAssembly is missing ${missing.join(", ")} (pass WXWebAssembly)`)

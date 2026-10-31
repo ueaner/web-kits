@@ -30,6 +30,8 @@ export interface FakeWXWebAssemblyOptions {
    * "zero"：length 是 0，可以重新定义；"zero-locked"：length 是 0，也不能重新定义（只能包一层）
    */
   exportLength?: "zero" | "zero-locked"
+  /** 去掉的构造函数：有的 iOS 环境（在一台 iPhone 14 Pro 上见过：iOS 18.5、微信 8.0.56、基础库 3.7.12）的 WXWebAssembly 没有 Module */
+  without?: readonly ("Module" | "Instance")[]
 }
 
 /**
@@ -62,7 +64,7 @@ export function createFakeWXWebAssembly(options: FakeWXWebAssemblyOptions = {}):
     moduleCalls.push(source as string)
     return new realm.Module(readPackageFile(source as string) as BufferSource)
   }
-  return {
+  const runtime: MiniProgramWebAssembly & { moduleCalls: string[] } = {
     moduleCalls,
     instantiate(path: string, imports: object) {
       try {
@@ -83,6 +85,8 @@ export function createFakeWXWebAssembly(options: FakeWXWebAssemblyOptions = {}):
     Memory: realm.Memory,
     Table: realm.Table,
   }
+  for (const name of options.without ?? []) delete runtime[name]
+  return runtime
 }
 
 /** 内存里的小程序文件系统（回调风格，失败时给 { errMsg }） */
