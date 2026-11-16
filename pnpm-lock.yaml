@@ -32,6 +32,9 @@ importers:
       '@testing-library/react':
         specifier: ^16.3.3
         version: 16.3.3(@testing-library/dom@10.4.2)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@types/node':
+        specifier: ^26.6.6
+        version: 26.6.6
       '@types/react':
         specifier: ^19.3.0
         version: 19.3.0
@@ -2761,7 +2764,7 @@ snapshots:
       core-js: 2.5.7
       jpeg-js: 0.3.7
 
-  '@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8)':
+  '@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))':
     dependencies:
       '@jimp/custom': 0.6.8(debug@4.1.1)
       '@jimp/utils': 0.6.8
@@ -2780,25 +2783,25 @@ snapshots:
       core-js: 2.5.7
       tinycolor2: 1.6.0
 
-  '@jimp/plugin-contain@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-scale@0.6.8(@jimp/custom@0.6.8)(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8)))':
+  '@jimp/plugin-contain@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-scale@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))))':
     dependencies:
       '@jimp/custom': 0.6.8(debug@4.1.1)
-      '@jimp/plugin-blit': 0.6.8(@jimp/custom@0.6.8)
-      '@jimp/plugin-resize': 0.6.8(@jimp/custom@0.6.8)
-      '@jimp/plugin-scale': 0.6.8(@jimp/custom@0.6.8)(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8))
+      '@jimp/plugin-blit': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
+      '@jimp/plugin-resize': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
+      '@jimp/plugin-scale': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))
       '@jimp/utils': 0.6.8
       core-js: 2.5.7
 
-  '@jimp/plugin-cover@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-crop@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-scale@0.6.8(@jimp/custom@0.6.8)(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8)))':
+  '@jimp/plugin-cover@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-crop@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-scale@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))))':
     dependencies:
       '@jimp/custom': 0.6.8(debug@4.1.1)
-      '@jimp/plugin-crop': 0.6.8(@jimp/custom@0.6.8)
-      '@jimp/plugin-resize': 0.6.8(@jimp/custom@0.6.8)
-      '@jimp/plugin-scale': 0.6.8(@jimp/custom@0.6.8)(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8))
+      '@jimp/plugin-crop': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
+      '@jimp/plugin-resize': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
+      '@jimp/plugin-scale': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))
       '@jimp/utils': 0.6.8
       core-js: 2.5.7
 
-  '@jimp/plugin-crop@0.6.8(@jimp/custom@0.6.8)':
+  '@jimp/plugin-crop@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))':
     dependencies:
       '@jimp/custom': 0.6.8(debug@4.1.1)
       '@jimp/utils': 0.6.8
@@ -2816,10 +2819,10 @@ snapshots:
       '@jimp/utils': 0.6.8
       core-js: 2.5.7
 
-  '@jimp/plugin-flip@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-rotate@0.6.8(@jimp/custom@0.6.8)(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-crop@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8)))':
+  '@jimp/plugin-flip@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-rotate@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-crop@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))))':
     dependencies:
       '@jimp/custom': 0.6.8(debug@4.1.1)
-      '@jimp/plugin-rotate': 0.6.8(@jimp/custom@0.6.8)(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-crop@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8))
+      '@jimp/plugin-rotate': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-crop@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))
       '@jimp/utils': 0.6.8
       core-js: 2.5.7
 
@@ -2847,58 +2850,58 @@ snapshots:
       '@jimp/utils': 0.6.8
       core-js: 2.5.7
 
-  '@jimp/plugin-print@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8))(debug@4.1.1)':
+  '@jimp/plugin-print@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(debug@4.1.1)':
     dependencies:
       '@jimp/custom': 0.6.8(debug@4.1.1)
-      '@jimp/plugin-blit': 0.6.8(@jimp/custom@0.6.8)
+      '@jimp/plugin-blit': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
       '@jimp/utils': 0.6.8
       core-js: 2.5.7
       load-bmfont: 1.4.2(debug@4.1.1)
     transitivePeerDependencies:
       - debug
 
-  '@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8)':
+  '@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))':
     dependencies:
       '@jimp/custom': 0.6.8(debug@4.1.1)
       '@jimp/utils': 0.6.8
       core-js: 2.5.7
 
-  '@jimp/plugin-rotate@0.6.8(@jimp/custom@0.6.8)(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-crop@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8))':
+  '@jimp/plugin-rotate@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-crop@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))':
     dependencies:
       '@jimp/custom': 0.6.8(debug@4.1.1)
-      '@jimp/plugin-blit': 0.6.8(@jimp/custom@0.6.8)
-      '@jimp/plugin-crop': 0.6.8(@jimp/custom@0.6.8)
-      '@jimp/plugin-resize': 0.6.8(@jimp/custom@0.6.8)
+      '@jimp/plugin-blit': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
+      '@jimp/plugin-crop': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
+      '@jimp/plugin-resize': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
       '@jimp/utils': 0.6.8
       core-js: 2.5.7
 
-  '@jimp/plugin-scale@0.6.8(@jimp/custom@0.6.8)(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8))':
+  '@jimp/plugin-scale@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))':
     dependencies:
       '@jimp/custom': 0.6.8(debug@4.1.1)
-      '@jimp/plugin-resize': 0.6.8(@jimp/custom@0.6.8)
+      '@jimp/plugin-resize': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
       '@jimp/utils': 0.6.8
       core-js: 2.5.7
 
   '@jimp/plugins@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(debug@4.1.1)':
     dependencies:
       '@jimp/custom': 0.6.8(debug@4.1.1)
-      '@jimp/plugin-blit': 0.6.8(@jimp/custom@0.6.8)
+      '@jimp/plugin-blit': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
       '@jimp/plugin-blur': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
       '@jimp/plugin-color': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
-      '@jimp/plugin-contain': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-scale@0.6.8(@jimp/custom@0.6.8)(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8)))
-      '@jimp/plugin-cover': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-crop@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-scale@0.6.8(@jimp/custom@0.6.8)(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8)))
-      '@jimp/plugin-crop': 0.6.8(@jimp/custom@0.6.8)
+      '@jimp/plugin-contain': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-scale@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))))
+      '@jimp/plugin-cover': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-crop@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-scale@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))))
+      '@jimp/plugin-crop': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
       '@jimp/plugin-displace': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
       '@jimp/plugin-dither': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
-      '@jimp/plugin-flip': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-rotate@0.6.8(@jimp/custom@0.6.8)(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-crop@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8)))
+      '@jimp/plugin-flip': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-rotate@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-crop@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1))))
       '@jimp/plugin-gaussian': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
       '@jimp/plugin-invert': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
       '@jimp/plugin-mask': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
       '@jimp/plugin-normalize': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
-      '@jimp/plugin-print': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8))(debug@4.1.1)
-      '@jimp/plugin-resize': 0.6.8(@jimp/custom@0.6.8)
-      '@jimp/plugin-rotate': 0.6.8(@jimp/custom@0.6.8)(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-crop@0.6.8(@jimp/custom@0.6.8))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8))
-      '@jimp/plugin-scale': 0.6.8(@jimp/custom@0.6.8)(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8))
+      '@jimp/plugin-print': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(debug@4.1.1)
+      '@jimp/plugin-resize': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))
+      '@jimp/plugin-rotate': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-blit@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-crop@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))
+      '@jimp/plugin-scale': 0.6.8(@jimp/custom@0.6.8(debug@4.1.1))(@jimp/plugin-resize@0.6.8(@jimp/custom@0.6.8(debug@4.1.1)))
       core-js: 2.5.7
       timm: 1.7.1
     transitivePeerDependencies:

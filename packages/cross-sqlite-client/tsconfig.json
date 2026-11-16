@@ -4,6 +4,8 @@
   "compilerOptions": {
     "resolveJsonModule": true,
     "noFallthroughCasesInSwitch": true,
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    // 测试要读安装的 sqlite-wasm 产物（test/web-vfs.test.ts 用 node:fs）；src 是浏览器 / 小程序代码，不用 Node 的 API
+    "types": ["node"]
   }
 }

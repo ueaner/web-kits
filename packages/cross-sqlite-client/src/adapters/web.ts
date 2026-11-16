@@ -11,6 +11,7 @@ import type {
 import { DbCloseError, DbError, DbExecutionError, DbInitializationError, DbTabLockError } from "../core/errors"
 
 import { sqlite3Worker1Promiser } from "@sqlite.org/sqlite-wasm"
+import { OPFS_VFS, createWorkerWithParams, disableVfsParams } from "./web-vfs"
 import type { Promiser, DbId, PromiserResponseError, PromiserResponseSuccess } from "@sqlite.org/sqlite-wasm"
 
 export interface WebAdapterOptions {
@@ -262,14 +263,17 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
     },
   }
 
-  function createWorker(): Worker | undefined {
-    // 用 sqlite-wasm 自己的默认工厂创建 Worker——new URL("sqlite3-worker1.mjs", import.meta.url)
-    // 的解析必须发生在 sqlite-wasm 模块内部，在我们自己的代码里重写会因打包后路径不同而 404。
-    // 创建失败（比如非浏览器环境的奇怪组合）时不传 worker，让 promiser 走自己的默认路径兜底。
+  /**
+   * 用 sqlite-wasm 自己的默认工厂创建 Worker——new URL("sqlite3-worker1.mjs", import.meta.url)
+   * 的解析必须发生在 sqlite-wasm 模块内部，在我们自己的代码里重写会因打包后路径不同而 404。
+   * memory：这个 Worker 只开内存库，跳过全部 OPFS VFS 的安装；否则只装 OPFS_VFS（web-vfs.ts）。
+   * 创建失败（比如非浏览器环境的奇怪组合）时不传 worker，让 promiser 走自己的默认路径兜底。
+   */
+  function createWorker(memory: boolean): Worker | undefined {
     try {
       const factory = sqlite3Worker1Promiser.defaultConfig?.worker
       if (typeof factory === "function") {
-        return factory()
+        return createWorkerWithParams(factory, disableVfsParams(memory))
       }
       return factory
     } catch {
@@ -277,12 +281,12 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
     }
   }
 
-  /** 新建 Worker 和它的 promiser，等它就绪；超时 reject */
-  async function startPromiser(): Promise<Promiser> {
+  /** 新建 Worker 和它的 promiser，等它就绪；超时 reject。memory 见 createWorker */
+  async function startPromiser(memory: boolean): Promise<Promiser> {
     // 注意：库自身的 onerror 只是诊断日志钩子（用于"未处理的 worker 消息"等情况），并不会
     // reject 这个 Promise —— 如果 Worker 脚本本身加载失败（404、网络错误等），既不会触发
     // onerror 也不会触发 onready，Promise 会永远 pending。因此这里用超时兜底。
-    worker = createWorker() ?? null
+    worker = createWorker(memory) ?? null
     const readyPromise = sqlite3Worker1Promiser({
       worker: worker ?? undefined,
       onerror: (...args) => logger.error("[Web DB] sqlite3Worker1Promiser error:", ...args),
@@ -346,7 +350,7 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
         await root.getFileHandle("test_opfs_support", { create: true })
         // 探测文件只是为了确认 OPFS 真的可用，用完即删，避免每次初始化都留下一个垃圾文件
         await root.removeEntry("test_opfs_support").catch(() => {})
-        filename = `file:${config.name}.db?vfs=opfs`
+        filename = `file:${config.name}.db?vfs=${OPFS_VFS}`
       } catch (opfsError) {
         if (!fallbackToMemory) {
           throw new DbInitializationError(
@@ -379,7 +383,7 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
     }
 
     try {
-      promiser = await startPromiser()
+      promiser = await startPromiser(filename === ":memory:")
 
       try {
         currentDbId = await openDatabase(promiser, filename)
@@ -397,7 +401,7 @@ export function createWebAdapter(options: WebAdapterOptions = {}): DbAdapter {
           if (timedOut) {
             // 卡住的 Worker 阻塞在 OPFS 操作里，再也处理不了消息：结束它（它的 OPFS 代理 Worker 随之结束），换一个新的开内存库
             worker?.terminate()
-            promiser = await startPromiser()
+            promiser = await startPromiser(true)
           }
           currentDbId = await openDatabase(promiser, ":memory:")
           filename = ":memory:"

@@ -21,7 +21,11 @@ vi.mock("@sqlite.org/sqlite-wasm", () => {
     promisers++
     return promiser
   }
-  return { sqlite3Worker1Promiser: Object.assign(start, { defaultConfig: undefined }), default: undefined }
+  // 默认工厂和 sqlite-wasm 的一样在调用时读全局 Worker：没有 stub 时（Node 里没有 Worker）抛错，适配器走 promiser 的默认路径
+  const defaultConfig = {
+    worker: () => new Worker(new URL("http://localhost/assets/sqlite3-worker1.mjs"), { type: "module" }),
+  }
+  return { sqlite3Worker1Promiser: Object.assign(start, { defaultConfig }), default: undefined }
 })
 
 const { createWebAdapter } = await import("../src/adapters/web")
@@ -39,8 +43,18 @@ function browser({ isolated = true, opfs = true, probeFails = false } = {}) {
 const silent = { warn: () => {}, error: () => {} }
 const open = () => createWebAdapter({ singleTabLock: "off", logger: silent }).initialize({ name: "app" })
 
+/** 假的全局 Worker：记下每个 Worker 的 URL 上带了哪些 "-disable" 参数 */
+let workerParams: string[][] = []
+class FakeWorker {
+  constructor(url: string | URL) {
+    workerParams.push([...new URL(url).searchParams.keys()])
+  }
+  terminate() {}
+}
+
 afterEach(() => {
   vi.unstubAllGlobals()
+  workerParams = []
   opened.length = 0
   failOpfsOpen = false
   hangOpfsOpen = false
@@ -235,5 +249,53 @@ describe.skipIf(!realLocks)("web adapter: singleTabLock", () => {
     expect(client.storage).toEqual({ persistent: false, reason: "open-failed" })
     await expectLockFree("fallback-db")
     await client.close()
+  })
+})
+
+// 只装要用的 OPFS VFS（src/adapters/web-vfs.ts）：sqlite-wasm 的 Worker 启动时会安装 opfs 和 opfs-wl，OPFS 不可用时每个都要
+// 等 4 秒超时（Safari 无痕窗口里页面因此多等约 8 秒）
+describe("web adapter: which OPFS VFSes the worker installs", () => {
+  const ALL = ["opfs-disable", "opfs-wl-disable"]
+
+  it("skips none but opfs-wl when it opens the OPFS file", async () => {
+    browser()
+    vi.stubGlobal("Worker", FakeWorker)
+    expect((await open()).storage).toEqual({ persistent: true })
+    // opfs-disable 在这里会让 open 失败、悄悄退回内存库
+    expect(workerParams).toEqual([["opfs-wl-disable"]])
+  })
+
+  it("skips every OPFS VFS when it already knows the database is in memory", async () => {
+    for (const options of [{ isolated: false }, { opfs: false }, { probeFails: true }]) {
+      browser(options)
+      vi.stubGlobal("Worker", FakeWorker)
+      workerParams = []
+      expect((await open()).storage.persistent).toBe(false)
+      expect(workerParams).toEqual([ALL])
+    }
+  })
+
+  it("starts the replacement worker for memory when opening the OPFS file never answers", async () => {
+    browser()
+    vi.stubGlobal("Worker", FakeWorker)
+    hangOpfsOpen = true
+    const client = await createWebAdapter({ singleTabLock: "off", timeoutMs: 20, logger: silent }).initialize({ name: "app" })
+    expect(client.storage).toEqual({ persistent: false, reason: "open-timeout" })
+    expect(workerParams).toEqual([["opfs-wl-disable"], ALL])
+  })
+
+  it("keeps the worker it has when opening the OPFS file fails", async () => {
+    browser()
+    vi.stubGlobal("Worker", FakeWorker)
+    failOpfsOpen = true
+    expect((await open()).storage).toEqual({ persistent: false, reason: "open-failed" })
+    expect(workerParams).toEqual([["opfs-wl-disable"]])
+  })
+
+  it("puts the global Worker back", async () => {
+    browser()
+    vi.stubGlobal("Worker", FakeWorker)
+    await open()
+    expect(globalThis.Worker).toBe(FakeWorker)
   })
 })
