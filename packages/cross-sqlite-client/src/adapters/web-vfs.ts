@@ -31,7 +31,8 @@ export function disableVfsParams(memory: boolean): string[] {
  * URL 必须由 sqlite-wasm 的模块自己解析（new URL("sqlite3-worker1.mjs", import.meta.url)，在这里重写会因打包后路径不同而
  * 404），所以不改 URL 本身，而是在调用工厂的那一刻把全局 Worker 换成一个追加参数的子类，调用后立即还原。调用是同步的，
  * 不会和别的代码交错。工厂在调用时读全局 Worker（Vite 的产物里是 new Worker(e.toString())）才有效；读不到时（别的打包
- * 方式提前绑定了 Worker）参数加不上，行为退回原样。
+ * 方式提前绑定了 Worker）参数加不上，行为退回原样。只给 http(s) 的 URL 加：blob: / data: 这类 URL 加了 query 就找不到或
+ * 内容被改，Worker 加载失败、连内存库都开不了，所以原样交出去（退回原样：照旧安装、多等几秒）。
  */
 export function createWorkerWithParams(create: () => Worker, params: readonly string[]): Worker {
   const Original = globalThis.Worker
@@ -39,6 +40,10 @@ export function createWorkerWithParams(create: () => Worker, params: readonly st
   class WorkerWithParams extends Original {
     constructor(scriptURL: string | URL, options?: WorkerOptions) {
       const url = new URL(scriptURL, globalThis.location?.href)
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        super(scriptURL, options)
+        return
+      }
       for (const param of params) url.searchParams.set(param, "")
       super(url, options)
     }

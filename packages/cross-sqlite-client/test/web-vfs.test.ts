@@ -43,6 +43,17 @@ describe("createWorkerWithParams", () => {
     expect(globalThis.Worker).toBe(FakeWorker)
   })
 
+  it("leaves blob: and data: URLs alone (a query would break them)", () => {
+    vi.stubGlobal("Worker", FakeWorker)
+    for (const url of ["blob:http://localhost/4f7c6a1e-0000-4000-8000-000000000000", "data:text/javascript,postMessage(1)"]) {
+      createWorkerWithParams(() => new Worker(url), ["opfs-disable"])
+    }
+    expect(FakeWorker.created.map((w) => w.url)).toEqual([
+      "blob:http://localhost/4f7c6a1e-0000-4000-8000-000000000000",
+      "data:text/javascript,postMessage(1)",
+    ])
+  })
+
   it("puts Worker back when the factory throws", () => {
     vi.stubGlobal("Worker", FakeWorker)
     expect(() =>
