@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.4
+
+### Patch Changes
+
+- 513f806: Web adapter: the SQLite worker only installs the OPFS VFS it will use. sqlite-wasm's worker installs both `opfs` and `opfs-wl` on startup, each starting an OPFS proxy worker and waiting up to 4 s for it; when the proxy can't get OPFS (Safari private windows, Playwright's WebKit: `getDirectory()` throws `UnknownError`) it logs the error without telling the worker, so the worker waits out both timeouts. The adapter had already decided on `:memory:`, yet the database was ready only ~8 s later. Now a worker that only opens `:memory:` (OPFS unsupported, not cross-origin isolated, the probe failed, or the replacement worker after an OPFS open timed out) skips both VFSes, and one that opens the OPFS file skips `opfs-wl` (the file is opened with `vfs=opfs`; `opfs` is never skipped). The worker URL carries sqlite-wasm's `opfs-disable` / `opfs-wl-disable` parameters, added by swapping the global `Worker` for the duration of sqlite-wasm's own worker factory call. Only `http(s):` worker URLs get them; a `blob:` or `data:` URL is passed on unchanged. If sqlite-wasm ignores the parameters or the bundler binds `Worker` early, startup behaves as before; the database file and VFS are unchanged either way. A test checks the VFS list against the installed sqlite-wasm, so an upgrade that adds or renames an OPFS VFS fails it.
+
 ## 0.6.3
 
 ### Patch Changes
