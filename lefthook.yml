@@ -26,7 +26,9 @@ pre-commit:
       run: pnpm exec oxlint {staged_files}
 
 pre-push:
-  parallel: true
+  # 按顺序跑，不并行：typecheck 会先 build（tsdown clean 清空 dist/），而 sqlite-wasm-miniprogram 的测试直接
+  # import ../dist/index.js，两者并行时测试会读到正在被清空的 dist/ 而失败。piped 按书写顺序执行，前一条失败就停
+  piped: true
   commands:
     typecheck:
       # 与根 typecheck 脚本相同：先 build 再 tsc。
